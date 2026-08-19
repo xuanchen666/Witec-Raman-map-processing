@@ -10,10 +10,8 @@ from pathlib import Path
 import re
 from typing import Any, cast
 
-import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
-import rampy as rp
 from pybaselines import Baseline
 
 from raman_noiseaware_baseline import auto_baseline_noiseaware
@@ -539,6 +537,7 @@ def despike_parsed_collection(
     threshold: int = 3,
 ) -> ParsedCollectionMutable:
     """Apply rampy.despiking to every spectrum of every parsed map."""
+    import rampy as rp
 
     despiked_collection = []
 
@@ -988,16 +987,13 @@ def select_max_intensity_pixel(
     return int(row_index), int(col_index)
 
 
-def plot_pixel_spectrum_comparison(
-    ax,
+def _compute_pixel_spectrum_comparison_data(
     parsed_item: ParsedMap,
     row_index: int,
     col_index: int,
     *,
     spectrum_key: str = "corrected_spectra_cube",
     stage_label: str = "Baseline corrected",
-    figure_title: str | None = None,
-    highlight_wavenumber: float | None = None,
     show_previous_overlay: bool = True,
     show_baseline: bool = True,
     show_noiseaware_anchors: bool = False,
@@ -1005,19 +1001,12 @@ def plot_pixel_spectrum_comparison(
     previous_parsed_item: ParsedMap | None = None,
     previous_spectrum_key: str = "spectra_cube",
     baseline_label: str | None = None,
-) -> None:
-    """Plot corrected, previous-stage, and baseline spectra on one axis."""
+) -> dict[str, object]:
+    """Resolve traces/labels for the pixel spectrum comparison plot (no plotting)."""
     wavenumber = np.asarray(parsed_item["wavenumber_cm1"], dtype=float)
     selected_spectrum = np.asarray(parsed_item[spectrum_key][row_index, col_index, :], dtype=float)
 
-    ax.plot(
-        wavenumber,
-        selected_spectrum,
-        color="tab:blue",
-        linewidth=1.5,
-        label=stage_label,
-    )
-
+    previous_trace: dict[str, object] | None = None
     if show_previous_overlay and previous_parsed_item is not None and previous_spectrum_key in previous_parsed_item:
         previous_spectrum = np.asarray(previous_parsed_item[previous_spectrum_key][row_index, col_index, :], dtype=float)
         previous_wavenumber = np.asarray(previous_parsed_item.get("wavenumber_cm1", wavenumber), dtype=float)
@@ -1029,37 +1018,31 @@ def plot_pixel_spectrum_comparison(
                 min_len = min(previous_wavenumber.shape[0], previous_spectrum.shape[0])
                 previous_wavenumber = previous_wavenumber[:min_len]
                 previous_spectrum = previous_spectrum[:min_len]
-        ax.plot(
-            previous_wavenumber,
-            previous_spectrum,
-            color="0.45",
-            linewidth=1.0,
-            linestyle="--",
-            label=previous_label,
-        )
+        previous_trace = {
+            "wavenumber": previous_wavenumber,
+            "intensity": previous_spectrum,
+            "label": previous_label,
+        }
     elif show_previous_overlay and spectrum_key != "spectra_cube" and "spectra_cube" in parsed_item:
         previous_spectrum = np.asarray(parsed_item["spectra_cube"][row_index, col_index, :], dtype=float)
-        ax.plot(
-            wavenumber,
-            previous_spectrum,
-            color="0.45",
-            linewidth=1.0,
-            linestyle="--",
-            label=previous_label,
-        )
+        previous_trace = {
+            "wavenumber": wavenumber,
+            "intensity": previous_spectrum,
+            "label": previous_label,
+        }
 
+    baseline_trace: dict[str, object] | None = None
     if show_baseline and "baseline_cube" in parsed_item:
         baseline = np.asarray(parsed_item["baseline_cube"][row_index, col_index, :], dtype=float)
         resolved_baseline_label = baseline_label or f"{str(parsed_item.get('baseline_method', 'baseline')).upper()} baseline"
-        ax.plot(
-            wavenumber,
-            baseline,
-            color="tab:red",
-            linewidth=1.2,
-            linestyle=":",
-            label=resolved_baseline_label,
-        )
+        baseline_trace = {
+            "wavenumber": wavenumber,
+            "intensity": baseline,
+            "label": resolved_baseline_label,
+        }
 
+    anchor_x = np.asarray([], dtype=float)
+    anchor_y = np.asarray([], dtype=float)
     if show_noiseaware_anchors:
         baseline_method = str(parsed_item.get("baseline_method", "")).lower()
         if baseline_method == "noiseaware":
@@ -1082,25 +1065,96 @@ def plot_pixel_spectrum_comparison(
                 finite_anchor_mask = anchor_mask & np.isfinite(wavenumber) & np.isfinite(anchor_source_spectrum)
                 anchor_x = wavenumber[finite_anchor_mask]
                 anchor_y = anchor_source_spectrum[finite_anchor_mask]
-            else:
-                anchor_x = np.asarray([], dtype=float)
-                anchor_y = np.asarray([], dtype=float)
 
-            if anchor_x.size and anchor_y.size:
-                if anchor_x.size > 250:
-                    sample_step = max(1, anchor_x.size // 250)
-                    anchor_x = anchor_x[::sample_step]
-                    anchor_y = anchor_y[::sample_step]
-                ax.scatter(
-                    anchor_x,
-                    anchor_y,
-                    s=20,
-                    facecolors="none",
-                    edgecolors="tab:green",
-                    linewidths=1.0,
-                    alpha=0.9,
-                    label="Background anchors (pre-median)",
-                )
+            if anchor_x.size and anchor_x.size > 250:
+                sample_step = max(1, anchor_x.size // 250)
+                anchor_x = anchor_x[::sample_step]
+                anchor_y = anchor_y[::sample_step]
+
+    return {
+        "wavenumber": wavenumber,
+        "selected_spectrum": selected_spectrum,
+        "stage_label": stage_label,
+        "previous_trace": previous_trace,
+        "baseline_trace": baseline_trace,
+        "anchor_x": anchor_x,
+        "anchor_y": anchor_y,
+    }
+
+
+def plot_pixel_spectrum_comparison(
+    ax,
+    parsed_item: ParsedMap,
+    row_index: int,
+    col_index: int,
+    *,
+    spectrum_key: str = "corrected_spectra_cube",
+    stage_label: str = "Baseline corrected",
+    figure_title: str | None = None,
+    highlight_wavenumber: float | None = None,
+    show_previous_overlay: bool = True,
+    show_baseline: bool = True,
+    show_noiseaware_anchors: bool = False,
+    previous_label: str = "Previous processed spectrum",
+    previous_parsed_item: ParsedMap | None = None,
+    previous_spectrum_key: str = "spectra_cube",
+    baseline_label: str | None = None,
+) -> None:
+    """Plot corrected, previous-stage, and baseline spectra on one axis."""
+    data = _compute_pixel_spectrum_comparison_data(
+        parsed_item,
+        row_index,
+        col_index,
+        spectrum_key=spectrum_key,
+        stage_label=stage_label,
+        show_previous_overlay=show_previous_overlay,
+        show_baseline=show_baseline,
+        show_noiseaware_anchors=show_noiseaware_anchors,
+        previous_label=previous_label,
+        previous_parsed_item=previous_parsed_item,
+        previous_spectrum_key=previous_spectrum_key,
+        baseline_label=baseline_label,
+    )
+
+    ax.plot(
+        data["wavenumber"],
+        data["selected_spectrum"],
+        color="tab:blue",
+        linewidth=1.5,
+        label=data["stage_label"],
+    )
+
+    if data["previous_trace"] is not None:
+        ax.plot(
+            data["previous_trace"]["wavenumber"],
+            data["previous_trace"]["intensity"],
+            color="0.45",
+            linewidth=1.0,
+            linestyle="--",
+            label=data["previous_trace"]["label"],
+        )
+
+    if data["baseline_trace"] is not None:
+        ax.plot(
+            data["baseline_trace"]["wavenumber"],
+            data["baseline_trace"]["intensity"],
+            color="tab:red",
+            linewidth=1.2,
+            linestyle=":",
+            label=data["baseline_trace"]["label"],
+        )
+
+    if data["anchor_x"].size and data["anchor_y"].size:
+        ax.scatter(
+            data["anchor_x"],
+            data["anchor_y"],
+            s=20,
+            facecolors="none",
+            edgecolors="tab:green",
+            linewidths=1.0,
+            alpha=0.9,
+            label="Background anchors (pre-median)",
+        )
 
     if highlight_wavenumber is not None:
         ax.axvline(float(highlight_wavenumber), color="tab:orange", linestyle="--", linewidth=1.0)
@@ -1129,6 +1183,8 @@ def save_pixel_spectrum_comparison(
     baseline_label: str | None = None,
 ) -> tuple[int, int]:
     """Save a single pixel spectrum comparison figure and return the selected pixel."""
+    import matplotlib.pyplot as plt
+
     row_index, col_index = select_max_intensity_pixel(parsed_item, spectrum_key=spectrum_key)
     fig, ax = plt.subplots(figsize=(10, 5.2))
     plot_pixel_spectrum_comparison(
@@ -1165,6 +1221,7 @@ def launch_raman_map_explorer(
 
     import ipywidgets as widgets
     import matplotlib
+    import matplotlib.pyplot as plt
     from IPython.display import Image as IPythonImage
     from IPython.display import display
 

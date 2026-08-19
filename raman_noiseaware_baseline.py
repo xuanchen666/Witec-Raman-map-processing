@@ -5,7 +5,6 @@ from __future__ import annotations
 from pathlib import Path
 from typing import cast
 
-import matplotlib.pyplot as plt
 import numpy as np
 from scipy.interpolate import PchipInterpolator, UnivariateSpline
 from scipy.ndimage import binary_dilation, label, percentile_filter, uniform_filter1d
@@ -595,6 +594,8 @@ def auto_baseline_noiseaware(
     corrected = y - baseline
 
     if outdir is not None:
+        import matplotlib.pyplot as plt
+
         output_directory = Path(outdir)
         output_directory.mkdir(parents=True, exist_ok=True)
         figure, axis = plt.subplots(figsize=(10, 3.4), dpi=150)

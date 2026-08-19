@@ -8,11 +8,14 @@ from pathlib import Path
 import re
 import shutil
 from collections.abc import Iterable, Mapping
+from typing import TYPE_CHECKING, Any
 
-import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 from scipy.signal import find_peaks
+
+if TYPE_CHECKING:
+    import matplotlib.pyplot as plt
 
 from raman_config import (
     NORMALIZATION_METHOD,
@@ -496,6 +499,44 @@ def build_average_map_spectra(
     return df.sort_values(["group", "subgroup", "date", "file"]).reset_index(drop=True)
 
 
+def _compute_grouped_spectra_data(
+    subset: pd.DataFrame,
+    value_col: str,
+    stack_scale: float,
+    stack_extra_gap: float,
+    wavenumber_min: float | None,
+    wavenumber_max: float | None,
+) -> dict[str, Any]:
+    """Compute sliced/stacked traces and offset step for one group panel (no plotting)."""
+    windows = [
+        _slice_spectrum_to_wavenumber_range(
+            wavenumber_cm1=row["wavenumber_cm1"],
+            intensity=row[value_col],
+            wavenumber_min=wavenumber_min,
+            wavenumber_max=wavenumber_max,
+        )
+        for _, row in subset.iterrows()
+    ]
+    offset_step = _compute_stack_step(
+        spectra=[window_y for _, window_y in windows],
+        stack_scale=stack_scale,
+        stack_extra_gap=stack_extra_gap,
+    )
+
+    labels = []
+    stacked_traces = []
+    for stack_index, ((_, row), (window_x, window_y)) in enumerate(zip(subset.iterrows(), windows)):
+        label_date = row["date"].strftime("%Y-%m-%d") if pd.notna(row["date"]) else "Unknown date"
+        stacked_traces.append((window_x, window_y + stack_index * offset_step))
+        labels.append(f"{label_date} | {row['file']}")
+
+    return {
+        "offset_step": offset_step,
+        "stacked_traces": stacked_traces,
+        "labels": labels,
+    }
+
+
 def plot_grouped_spectra(
     df: pd.DataFrame,
     value_col: str,
@@ -511,6 +552,8 @@ def plot_grouped_spectra(
     output_path: Path | None = None,
 ) -> plt.Figure | None:
     """Plot stacked spectra and optionally export one figure per group."""
+    import matplotlib.pyplot as plt
+
     if group_col not in df.columns:
         raise KeyError(f"DataFrame is missing required grouping column '{group_col}'")
 
@@ -522,41 +565,9 @@ def plot_grouped_spectra(
     if output_path is not None and len(panels) > 1 and output_path.exists():
         output_path.unlink()
 
-    def _draw_group(axis: plt.Axes, group_name: str) -> None:
-        subset = df[df[group_col] == group_name].sort_values(["date", "file"])
-        spectra = [
-            _slice_spectrum_to_wavenumber_range(
-                wavenumber_cm1=row["wavenumber_cm1"],
-                intensity=row[value_col],
-                wavenumber_min=wavenumber_min,
-                wavenumber_max=wavenumber_max,
-            )[1]
-            for _, row in subset.iterrows()
-        ]
-        group_stack_scale = _resolve_group_value(stack_scale, group_name, fallback=1.0)
-        group_stack_extra_gap = _resolve_group_value(stack_extra_gap, group_name, fallback=0.0)
-        offset_step = _compute_stack_step(
-            spectra=spectra,
-            stack_scale=group_stack_scale,
-            stack_extra_gap=group_stack_extra_gap,
-        )
-
-        for stack_index, (_, row) in enumerate(subset.iterrows()):
-            label_date = row["date"].strftime("%Y-%m-%d") if pd.notna(row["date"]) else "Unknown date"
-            # Apply a deterministic offset so chronological ordering is visible.
-            window_x, window_y = _slice_spectrum_to_wavenumber_range(
-                wavenumber_cm1=row["wavenumber_cm1"],
-                intensity=row[value_col],
-                wavenumber_min=wavenumber_min,
-                wavenumber_max=wavenumber_max,
-            )
-            stacked_y = window_y + stack_index * offset_step
-            axis.plot(
-                window_x,
-                stacked_y,
-                linewidth=1.6,
-                label=f"{label_date} | {row['file']}",
-            )
+    def _draw_group(axis: plt.Axes, group_name: str, group_data: dict[str, Any]) -> None:
+        for (window_x, stacked_y), label in zip(group_data["stacked_traces"], group_data["labels"]):
+            axis.plot(window_x, stacked_y, linewidth=1.6, label=label)
 
         base_title = f"{title_prefix}_{group_name}" if title_prefix else str(group_name)
         axis.set_title(f"{base_title} ({title_suffix})" if title_suffix else base_title)
@@ -579,26 +590,20 @@ def plot_grouped_spectra(
     last_fig: plt.Figure | None = None
 
     for export_index, group_name in enumerate(panels, start=1):
-        fig, axis = plt.subplots(1, 1, figsize=(9, 5), sharex=True)
-        _draw_group(axis, group_name)
-
         subset = df[df[group_col] == group_name].sort_values(["date", "file"])
-        spectra = [
-            _slice_spectrum_to_wavenumber_range(
-                wavenumber_cm1=row["wavenumber_cm1"],
-                intensity=row[value_col],
-                wavenumber_min=wavenumber_min,
-                wavenumber_max=wavenumber_max,
-            )[1]
-            for _, row in subset.iterrows()
-        ]
         group_stack_scale = _resolve_group_value(stack_scale, group_name, fallback=1.0)
         group_stack_extra_gap = _resolve_group_value(stack_extra_gap, group_name, fallback=0.0)
-        offset_step = _compute_stack_step(
-            spectra=spectra,
+        group_data = _compute_grouped_spectra_data(
+            subset=subset,
+            value_col=value_col,
             stack_scale=group_stack_scale,
             stack_extra_gap=group_stack_extra_gap,
+            wavenumber_min=wavenumber_min,
+            wavenumber_max=wavenumber_max,
         )
+
+        fig, axis = plt.subplots(1, 1, figsize=(9, 5), sharex=True)
+        _draw_group(axis, group_name, group_data)
 
         fig.tight_layout(rect=(0, 0, 0.86, 1))
         if output_path is not None:
@@ -613,7 +618,7 @@ def plot_grouped_spectra(
                 value_col=value_col,
                 group_col=group_col,
                 target_path=target_path,
-                offset_step=offset_step,
+                offset_step=group_data["offset_step"],
             )
         plt.show()
         last_fig = fig
@@ -892,6 +897,8 @@ def plot_normalized_overlap_by_group(
     output_name_suffix: str | None = None,
 ) -> list[Path]:
     """Plot non-stacked normalized overlaps per group and optionally export PNGs."""
+    import matplotlib.pyplot as plt
+
     if avg_map_spectra.empty or "mean_spectrum_norm" not in avg_map_spectra.columns:
         return []
 
@@ -1346,6 +1353,8 @@ def plot_peak_ratio_by_date(
     group's figure is exported as an individual file using
     ``<stem>_<group><suffix>``.
     """
+    import matplotlib.pyplot as plt
+
     if peak_ratio_df.empty:
         return None
 
@@ -1517,14 +1526,13 @@ def _item_has_cut_pixels(parsed_item: dict, spectrum_key: str = "corrected_spect
     return int(np.count_nonzero(pixel_has_data)) < int(pixel_has_data.size)
 
 
-def _save_cut_pixel_map_slice(
+def _compute_cut_pixel_map_slice_data(
     parsed_item: dict,
-    output_path: Path,
     *,
     spectrum_key: str = "corrected_spectra_cube",
     color_scale_wavenumber_cm1: float = 562.0,
-) -> float:
-    """Save a map slice image at the nearest target wavenumber and return the used value."""
+) -> dict[str, Any]:
+    """Compute the map slice image and average-pixel overlay at the nearest target wavenumber."""
     cube = np.asarray(parsed_item[spectrum_key], dtype=float)
     if cube.ndim != 3:
         raise ValueError(f"Expected a 3D spectra cube for '{spectrum_key}', got shape {cube.shape}")
@@ -1539,31 +1547,62 @@ def _save_cut_pixel_map_slice(
     map_image = cube[:, :, wn_idx]
     map_image_display = map_image.T
 
-    fig, map_ax = plt.subplots(figsize=(7.2, 6.0))
-    im = map_ax.imshow(map_image_display, origin="upper", cmap="viridis", aspect="equal")
-
+    selected_rows: np.ndarray | None = None
+    selected_cols: np.ndarray | None = None
     average_pixel_mask = parsed_item.get("average_pixel_mask")
     if average_pixel_mask is not None:
         mask = np.asarray(average_pixel_mask, dtype=bool)
         if mask.ndim == 2 and mask.shape == map_image.shape and np.any(mask):
             selected_rows, selected_cols = np.nonzero(mask)
-            map_ax.scatter(
-                selected_rows,
-                selected_cols,
-                s=45,
-                facecolors="none",
-                edgecolors="white",
-                linewidths=1.2,
-                label="Average pixels",
-            )
-            legend_handles, legend_labels = map_ax.get_legend_handles_labels()
-            map_ax.legend(
-                legend_handles,
-                legend_labels,
-                fontsize=8,
-                loc="upper right",
-                frameon=True,
-            )
+
+    return {
+        "wn_idx": wn_idx,
+        "used_wavenumber": used_wavenumber,
+        "map_image": map_image,
+        "map_image_display": map_image_display,
+        "selected_rows": selected_rows,
+        "selected_cols": selected_cols,
+    }
+
+
+def _save_cut_pixel_map_slice(
+    parsed_item: dict,
+    output_path: Path,
+    *,
+    spectrum_key: str = "corrected_spectra_cube",
+    color_scale_wavenumber_cm1: float = 562.0,
+) -> float:
+    """Save a map slice image at the nearest target wavenumber and return the used value."""
+    import matplotlib.pyplot as plt
+
+    slice_data = _compute_cut_pixel_map_slice_data(
+        parsed_item,
+        spectrum_key=spectrum_key,
+        color_scale_wavenumber_cm1=color_scale_wavenumber_cm1,
+    )
+    used_wavenumber = slice_data["used_wavenumber"]
+
+    fig, map_ax = plt.subplots(figsize=(7.2, 6.0))
+    im = map_ax.imshow(slice_data["map_image_display"], origin="upper", cmap="viridis", aspect="equal")
+
+    if slice_data["selected_rows"] is not None:
+        map_ax.scatter(
+            slice_data["selected_rows"],
+            slice_data["selected_cols"],
+            s=45,
+            facecolors="none",
+            edgecolors="white",
+            linewidths=1.2,
+            label="Average pixels",
+        )
+        legend_handles, legend_labels = map_ax.get_legend_handles_labels()
+        map_ax.legend(
+            legend_handles,
+            legend_labels,
+            fontsize=8,
+            loc="upper right",
+            frameon=True,
+        )
 
     map_ax.set_title(
         "Baseline corrected"
@@ -1639,49 +1678,30 @@ def _export_cut_pixel_map_slice_csv(
     export_df.to_csv(output_path.with_suffix(".csv"), index=False)
 
 
-def _save_despiked_baseline_anchor_stack(
+def _compute_despiked_baseline_anchor_stack_data(
     parsed_item: dict,
-    output_path: Path,
     *,
     despiked_key: str = "spectra_cube",
     baseline_key: str = "baseline_cube",
     anchor_mask_key: str = "noiseaware_anchor_mask_cube",
-) -> dict[str, int | float | str]:
-    """Save one map-level stack plot with despiked spectra, baseline, and anchors."""
+    stack_scale: float = 1.35,
+    stack_extra_gap: float = 0.1,
+) -> dict[str, Any]:
+    """Compute retained-pixel traces, offsets, and anchors for the despiked/baseline stack plot."""
     if despiked_key not in parsed_item:
-        return {
-            "status": "missing_despiked_cube",
-            "pixels_plotted": 0,
-            "anchors_plotted": 0,
-            "offset_step": np.nan,
-        }
+        return {"status": "missing_despiked_cube"}
     if baseline_key not in parsed_item:
-        return {
-            "status": "missing_baseline_cube",
-            "pixels_plotted": 0,
-            "anchors_plotted": 0,
-            "offset_step": np.nan,
-        }
+        return {"status": "missing_baseline_cube"}
 
     wavenumber = np.asarray(parsed_item["wavenumber_cm1"], dtype=float)
     despiked_cube = np.asarray(parsed_item[despiked_key], dtype=float)
     baseline_cube = np.asarray(parsed_item[baseline_key], dtype=float)
 
     if despiked_cube.ndim != 3 or baseline_cube.ndim != 3:
-        return {
-            "status": "invalid_cube_shape",
-            "pixels_plotted": 0,
-            "anchors_plotted": 0,
-            "offset_step": np.nan,
-        }
+        return {"status": "invalid_cube_shape"}
 
     if despiked_cube.shape != baseline_cube.shape or despiked_cube.shape[2] != wavenumber.size:
-        return {
-            "status": "shape_mismatch",
-            "pixels_plotted": 0,
-            "anchors_plotted": 0,
-            "offset_step": np.nan,
-        }
+        return {"status": "shape_mismatch"}
 
     keep_mask_raw = parsed_item.get("spectrum_keep_mask")
     if keep_mask_raw is not None:
@@ -1694,12 +1714,7 @@ def _save_despiked_baseline_anchor_stack(
 
     retained_indices = np.argwhere(keep_mask)
     if retained_indices.size == 0:
-        return {
-            "status": "no_retained_pixels",
-            "pixels_plotted": 0,
-            "anchors_plotted": 0,
-            "offset_step": np.nan,
-        }
+        return {"status": "no_retained_pixels"}
 
     spectra_for_step = [
         np.asarray(despiked_cube[int(row_index), int(col_index), :], dtype=float)
@@ -1707,8 +1722,8 @@ def _save_despiked_baseline_anchor_stack(
     ]
     offset_step = _compute_stack_step(
         spectra=spectra_for_step,
-        stack_scale=1.35,
-        stack_extra_gap=0.1,
+        stack_scale=stack_scale,
+        stack_extra_gap=stack_extra_gap,
     )
 
     anchor_mask_cube = None
@@ -1717,13 +1732,10 @@ def _save_despiked_baseline_anchor_stack(
         if candidate_anchor_mask_cube.shape == despiked_cube.shape:
             anchor_mask_cube = candidate_anchor_mask_cube
 
-    # Scale figure height with retained pixel count so dense maps remain readable.
-    retained_count = int(retained_indices.shape[0])
-    fig_height = max(8.0, min(70.0, 2.8 + retained_count * 0.3))
-    fig, ax = plt.subplots(figsize=(14, fig_height))
     total_anchors = 0
     y_min = np.inf
     y_max = -np.inf
+    pixel_traces: list[dict[str, Any]] = []
     for stack_index, (row_index, col_index) in enumerate(retained_indices):
         row_i = int(row_index)
         col_i = int(col_index)
@@ -1733,6 +1745,96 @@ def _save_despiked_baseline_anchor_stack(
         baseline = np.asarray(baseline_cube[row_i, col_i, :], dtype=float)
         finite_signal_mask = np.isfinite(wavenumber) & np.isfinite(despiked)
         finite_baseline_mask = np.isfinite(wavenumber) & np.isfinite(baseline)
+
+        if np.any(finite_signal_mask):
+            y_values = despiked[finite_signal_mask] + offset
+            y_min = min(y_min, float(np.nanmin(y_values)))
+            y_max = max(y_max, float(np.nanmax(y_values)))
+        if np.any(finite_baseline_mask):
+            y_values = baseline[finite_baseline_mask] + offset
+            y_min = min(y_min, float(np.nanmin(y_values)))
+            y_max = max(y_max, float(np.nanmax(y_values)))
+
+        finite_anchor_mask = np.zeros_like(finite_signal_mask, dtype=bool)
+        anchor_x = np.asarray([], dtype=float)
+        anchor_y = np.asarray([], dtype=float)
+        if anchor_mask_cube is not None:
+            anchor_mask = np.asarray(anchor_mask_cube[row_i, col_i, :], dtype=bool)
+            finite_anchor_mask = anchor_mask & finite_signal_mask
+            if np.any(finite_anchor_mask):
+                total_anchors += int(np.count_nonzero(finite_anchor_mask))
+                anchor_x = wavenumber[finite_anchor_mask]
+                anchor_y = despiked[finite_anchor_mask] + offset
+
+        pixel_traces.append(
+            {
+                "row_index": row_i,
+                "col_index": col_i,
+                "stack_index": stack_index,
+                "offset": offset,
+                "wavenumber": wavenumber,
+                "despiked": despiked,
+                "baseline": baseline,
+                "finite_signal_mask": finite_signal_mask,
+                "finite_baseline_mask": finite_baseline_mask,
+                "anchor_mask": finite_anchor_mask,
+                "anchor_x": anchor_x,
+                "anchor_y": anchor_y,
+            }
+        )
+
+    return {
+        "status": "ok",
+        "retained_indices": retained_indices,
+        "offset_step": offset_step,
+        "pixel_traces": pixel_traces,
+        "total_anchors": total_anchors,
+        "y_min": y_min,
+        "y_max": y_max,
+    }
+
+
+def _save_despiked_baseline_anchor_stack(
+    parsed_item: dict,
+    output_path: Path,
+    *,
+    despiked_key: str = "spectra_cube",
+    baseline_key: str = "baseline_cube",
+    anchor_mask_key: str = "noiseaware_anchor_mask_cube",
+) -> dict[str, int | float | str]:
+    """Save one map-level stack plot with despiked spectra, baseline, and anchors."""
+    import matplotlib.pyplot as plt
+
+    stack_data = _compute_despiked_baseline_anchor_stack_data(
+        parsed_item,
+        despiked_key=despiked_key,
+        baseline_key=baseline_key,
+        anchor_mask_key=anchor_mask_key,
+        stack_scale=1.35,
+        stack_extra_gap=0.1,
+    )
+    if stack_data["status"] != "ok":
+        return {
+            "status": stack_data["status"],
+            "pixels_plotted": 0,
+            "anchors_plotted": 0,
+            "offset_step": np.nan,
+        }
+
+    retained_indices = stack_data["retained_indices"]
+    # Scale figure height with retained pixel count so dense maps remain readable.
+    retained_count = int(retained_indices.shape[0])
+    fig_height = max(8.0, min(70.0, 2.8 + retained_count * 0.3))
+    fig, ax = plt.subplots(figsize=(14, fig_height))
+
+    for trace in stack_data["pixel_traces"]:
+        stack_index = trace["stack_index"]
+        wavenumber = trace["wavenumber"]
+        despiked = trace["despiked"]
+        baseline = trace["baseline"]
+        finite_signal_mask = trace["finite_signal_mask"]
+        finite_baseline_mask = trace["finite_baseline_mask"]
+        offset = trace["offset"]
 
         ax.plot(
             wavenumber[finite_signal_mask],
@@ -1752,30 +1854,17 @@ def _save_despiked_baseline_anchor_stack(
             label="Baseline" if stack_index == 0 else None,
         )
 
-        if np.any(finite_signal_mask):
-            y_values = despiked[finite_signal_mask] + offset
-            y_min = min(y_min, float(np.nanmin(y_values)))
-            y_max = max(y_max, float(np.nanmax(y_values)))
-        if np.any(finite_baseline_mask):
-            y_values = baseline[finite_baseline_mask] + offset
-            y_min = min(y_min, float(np.nanmin(y_values)))
-            y_max = max(y_max, float(np.nanmax(y_values)))
-
-        if anchor_mask_cube is not None:
-            anchor_mask = np.asarray(anchor_mask_cube[row_i, col_i, :], dtype=bool)
-            finite_anchor_mask = anchor_mask & finite_signal_mask
-            if np.any(finite_anchor_mask):
-                total_anchors += int(np.count_nonzero(finite_anchor_mask))
-                ax.scatter(
-                    wavenumber[finite_anchor_mask],
-                    despiked[finite_anchor_mask] + offset,
-                    s=8,
-                    facecolors="none",
-                    edgecolors="tab:green",
-                    linewidths=0.5,
-                    alpha=0.6,
-                    label="Noiseaware anchors" if stack_index == 0 else None,
-                )
+        if trace["anchor_x"].size:
+            ax.scatter(
+                trace["anchor_x"],
+                trace["anchor_y"],
+                s=8,
+                facecolors="none",
+                edgecolors="tab:green",
+                linewidths=0.5,
+                alpha=0.6,
+                label="Noiseaware anchors" if stack_index == 0 else None,
+            )
 
     file_name = parsed_item["path"].name
     ax.set_title(
@@ -1783,6 +1872,8 @@ def _save_despiked_baseline_anchor_stack(
     )
     ax.set_xlabel("Wavenumber (cm^-1)")
     ax.set_ylabel("Intensity + stack offset")
+    y_min = stack_data["y_min"]
+    y_max = stack_data["y_max"]
     if np.isfinite(y_min) and np.isfinite(y_max):
         y_span = max(y_max - y_min, 1e-12)
         pad = 0.02 * y_span
@@ -1800,9 +1891,9 @@ def _save_despiked_baseline_anchor_stack(
 
     return {
         "status": "ok",
-        "pixels_plotted": int(retained_indices.shape[0]),
-        "anchors_plotted": int(total_anchors),
-        "offset_step": float(offset_step),
+        "pixels_plotted": retained_count,
+        "anchors_plotted": int(stack_data["total_anchors"]),
+        "offset_step": float(stack_data["offset_step"]),
     }
 
 
@@ -1815,59 +1906,28 @@ def _export_despiked_baseline_anchor_stack_csv(
     anchor_mask_key: str = "noiseaware_anchor_mask_cube",
 ) -> None:
     """Export stack-plot traces as CSV sidecar."""
-    if despiked_key not in parsed_item or baseline_key not in parsed_item:
-        return
-
-    wavenumber = np.asarray(parsed_item["wavenumber_cm1"], dtype=float)
-    despiked_cube = np.asarray(parsed_item[despiked_key], dtype=float)
-    baseline_cube = np.asarray(parsed_item[baseline_key], dtype=float)
-    if (
-        despiked_cube.ndim != 3
-        or baseline_cube.ndim != 3
-        or despiked_cube.shape != baseline_cube.shape
-        or despiked_cube.shape[2] != wavenumber.size
-    ):
-        return
-
-    keep_mask_raw = parsed_item.get("spectrum_keep_mask")
-    if keep_mask_raw is not None:
-        keep_mask = np.asarray(keep_mask_raw, dtype=bool)
-    else:
-        keep_mask = np.any(np.isfinite(despiked_cube), axis=2)
-    if keep_mask.shape != despiked_cube.shape[:2]:
-        keep_mask = np.any(np.isfinite(despiked_cube), axis=2)
-
-    retained_indices = np.argwhere(keep_mask)
-    if retained_indices.size == 0:
-        return
-
-    spectra_for_step = [
-        np.asarray(despiked_cube[int(row_index), int(col_index), :], dtype=float)
-        for row_index, col_index in retained_indices
-    ]
-    offset_step = _compute_stack_step(
-        spectra=spectra_for_step,
+    stack_data = _compute_despiked_baseline_anchor_stack_data(
+        parsed_item,
+        despiked_key=despiked_key,
+        baseline_key=baseline_key,
+        anchor_mask_key=anchor_mask_key,
         stack_scale=1.0,
         stack_extra_gap=0.0,
     )
-
-    anchor_mask_cube = None
-    if anchor_mask_key in parsed_item:
-        candidate_anchor_mask_cube = np.asarray(parsed_item[anchor_mask_key], dtype=bool)
-        if candidate_anchor_mask_cube.shape == despiked_cube.shape:
-            anchor_mask_cube = candidate_anchor_mask_cube
+    if stack_data["status"] != "ok":
+        return
 
     rows: list[pd.DataFrame] = []
-    for stack_index, (row_index, col_index) in enumerate(retained_indices):
-        row_i = int(row_index)
-        col_i = int(col_index)
-        offset = float(stack_index) * float(offset_step)
-        despiked = np.asarray(despiked_cube[row_i, col_i, :], dtype=float)
-        baseline = np.asarray(baseline_cube[row_i, col_i, :], dtype=float)
+    for trace in stack_data["pixel_traces"]:
+        row_i = trace["row_index"]
+        col_i = trace["col_index"]
+        stack_index = trace["stack_index"]
+        offset = trace["offset"]
+        wavenumber = trace["wavenumber"]
+        despiked = trace["despiked"]
+        baseline = trace["baseline"]
         finite_mask = np.isfinite(wavenumber)
-        anchor_mask = np.zeros_like(finite_mask, dtype=bool)
-        if anchor_mask_cube is not None:
-            anchor_mask = np.asarray(anchor_mask_cube[row_i, col_i, :], dtype=bool)
+        anchor_mask = trace["anchor_mask"]
 
         rows.append(
             pd.DataFrame(
