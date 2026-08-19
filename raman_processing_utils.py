@@ -1346,6 +1346,20 @@ def launch_raman_map_explorer(
         if col_slider.value > col_slider.max:
             col_slider.value = col_slider.max
 
+    def _on_file_change(*_):
+        _update_slider_range()
+        _render()
+
+    def _on_stage_change(*_):
+        # Suppress file_dropdown's own observer so the value it sets below doesn't re-trigger a duplicate render.
+        file_dropdown.unobserve(_on_file_change, names="value")
+        try:
+            _update_file_options()
+        finally:
+            file_dropdown.observe(_on_file_change, names="value")
+        _update_slider_range()
+        _render()
+
     def _render(*_):
         with output:
             is_initial_interactive_render = supports_map_click and active_canvas_holder["figure"] is None
@@ -1492,11 +1506,8 @@ def launch_raman_map_explorer(
                 display(IPythonImage(data=image_buffer.getvalue(), format="png"))
                 plt.close(fig)
 
-    stage_dropdown.observe(_update_file_options, names="value")
-    stage_dropdown.observe(_update_slider_range, names="value")
-    stage_dropdown.observe(_render, names="value")
-    file_dropdown.observe(_update_slider_range, names="value")
-    file_dropdown.observe(_render, names="value")
+    stage_dropdown.observe(_on_stage_change, names="value")
+    file_dropdown.observe(_on_file_change, names="value")
     map_mode_dropdown.observe(_render, names="value")
     map_index_slider.observe(_render, names="value")
     view_range_slider.observe(_render, names="value")
