@@ -436,22 +436,3 @@ def rank_despike_aggressiveness(
 
     return ranked.head(top_n).copy()
 
-
-def select_max_intensity_pixel(
-    parsed_item: ParsedMap,
-    spectrum_key: str = "corrected_spectra_cube",
-) -> tuple[int, int]:
-    """Return the pixel whose selected spectrum has the highest maximum signal value."""
-    cube = np.asarray(parsed_item[spectrum_key], dtype=float)
-    if cube.ndim != 3:
-        raise ValueError(f"Expected a 3D spectra cube for '{spectrum_key}', got shape {cube.shape}")
-
-    finite_cube = np.where(np.isfinite(cube), cube, -np.inf)
-    peak_map = finite_cube.max(axis=2)
-    if not np.isfinite(peak_map).any():
-        raise ValueError(f"No finite values found in '{spectrum_key}'")
-
-    flat_index = int(np.argmax(peak_map))
-    row_index, col_index = np.unravel_index(flat_index, peak_map.shape)
-    return int(row_index), int(col_index)
-

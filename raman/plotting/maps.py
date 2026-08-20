@@ -9,6 +9,7 @@ import numpy as np
 
 if TYPE_CHECKING:
     import matplotlib.pyplot as plt
+    from matplotlib.backends.backend_pdf import PdfPages
 
 
 def _compute_stack_step(
@@ -200,6 +201,7 @@ def _save_cut_pixel_map_slice(
     *,
     spectrum_key: str = "corrected_spectra_cube",
     color_scale_wavenumber_cm1: float = 562.0,
+    pdf: "PdfPages | None" = None,
 ) -> float:
     """Save a map slice image at the nearest target wavenumber and return the used value."""
     import matplotlib.pyplot as plt
@@ -244,110 +246,10 @@ def _save_cut_pixel_map_slice(
     fig.tight_layout()
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    fig.savefig(output_path, dpi=200, bbox_inches="tight")
+    if pdf is not None:
+        pdf.savefig(fig, dpi=200, bbox_inches="tight")
+    else:
+        fig.savefig(output_path, dpi=200, bbox_inches="tight")
     plt.close(fig)
     return used_wavenumber
-
-
-def _save_despiked_baseline_anchor_stack(
-    parsed_item: dict,
-    output_path: Path,
-    *,
-    despiked_key: str = "spectra_cube",
-    baseline_key: str = "baseline_cube",
-    anchor_mask_key: str = "noiseaware_anchor_mask_cube",
-) -> dict[str, int | float | str]:
-    """Save one map-level stack plot with despiked spectra, baseline, and anchors."""
-    import matplotlib.pyplot as plt
-
-    stack_data = _compute_despiked_baseline_anchor_stack_data(
-        parsed_item,
-        despiked_key=despiked_key,
-        baseline_key=baseline_key,
-        anchor_mask_key=anchor_mask_key,
-        stack_scale=1.35,
-        stack_extra_gap=0.1,
-    )
-    if stack_data["status"] != "ok":
-        return {
-            "status": stack_data["status"],
-            "pixels_plotted": 0,
-            "anchors_plotted": 0,
-            "offset_step": np.nan,
-        }
-
-    retained_indices = stack_data["retained_indices"]
-    # Scale figure height with retained pixel count so dense maps remain readable.
-    retained_count = int(retained_indices.shape[0])
-    fig_height = max(8.0, min(70.0, 2.8 + retained_count * 0.3))
-    fig, ax = plt.subplots(figsize=(14, fig_height))
-
-    for trace in stack_data["pixel_traces"]:
-        stack_index = trace["stack_index"]
-        wavenumber = trace["wavenumber"]
-        despiked = trace["despiked"]
-        baseline = trace["baseline"]
-        finite_signal_mask = trace["finite_signal_mask"]
-        finite_baseline_mask = trace["finite_baseline_mask"]
-        offset = trace["offset"]
-
-        ax.plot(
-            wavenumber[finite_signal_mask],
-            despiked[finite_signal_mask] + offset,
-            color="tab:blue",
-            linewidth=0.7,
-            alpha=0.35,
-            label="Despiked spectra" if stack_index == 0 else None,
-        )
-        ax.plot(
-            wavenumber[finite_baseline_mask],
-            baseline[finite_baseline_mask] + offset,
-            color="tab:red",
-            linewidth=0.7,
-            linestyle=":",
-            alpha=0.35,
-            label="Baseline" if stack_index == 0 else None,
-        )
-
-        if trace["anchor_x"].size:
-            ax.scatter(
-                trace["anchor_x"],
-                trace["anchor_y"],
-                s=8,
-                facecolors="none",
-                edgecolors="tab:green",
-                linewidths=0.5,
-                alpha=0.6,
-                label="Noiseaware anchors" if stack_index == 0 else None,
-            )
-
-    file_name = parsed_item["path"].name
-    ax.set_title(
-        f"{file_name} | retained pixels={retained_count}"
-    )
-    ax.set_xlabel("Wavenumber (cm^-1)")
-    ax.set_ylabel("Intensity + stack offset")
-    y_min = stack_data["y_min"]
-    y_max = stack_data["y_max"]
-    if np.isfinite(y_min) and np.isfinite(y_max):
-        y_span = max(y_max - y_min, 1e-12)
-        pad = 0.02 * y_span
-        ax.set_ylim(y_min - pad, y_max + pad)
-    ax.margins(x=0.01, y=0.0)
-    ax.grid(alpha=0.2)
-    handles, labels = ax.get_legend_handles_labels()
-    if handles:
-        ax.legend(loc="upper right", frameon=True, fontsize=9)
-
-    fig.tight_layout()
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    fig.savefig(output_path, dpi=200, bbox_inches="tight")
-    plt.close(fig)
-
-    return {
-        "status": "ok",
-        "pixels_plotted": retained_count,
-        "anchors_plotted": int(stack_data["total_anchors"]),
-        "offset_step": float(stack_data["offset_step"]),
-    }
 

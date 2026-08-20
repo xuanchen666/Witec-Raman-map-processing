@@ -44,6 +44,25 @@ step through every stage/file/pixel; its state can be saved with
 `raman.export.snapshot.save_explorer_snapshot` and reopened later from
 `Raman_explorer_reopen.ipynb` without rerunning Stages 1-6.
 
+### Stage 6 exports
+
+Stage 6 writes `<sample>_map_analysis_exports` below `DATA_DIR`. Its plot exports are
+consolidated into PDFs: `01_plots/stage6_spectra_overview.pdf` contains the average,
+normalized, overlap, and peak-ratio pages, while
+`01_plots/05_cutpixel_map/stage6_cutpixel_map.pdf` contains one cut-pixel map per
+page. CSV data remains available alongside these PDFs.
+
+The `01_plots` subdirectories are numbered continuously:
+`01_avg_stack`, `02_norm_stack`, `03_norm_overlap`, `04_peak_ratio`,
+`05_cutpixel_map`, and `06_despiked_baseline_anchor_stack`. The latter contains the
+despiked spectrum, baseline, and noise-aware anchor data as CSV files; it no longer
+creates a separate stack PNG. The obsolete maximum-signal export is no longer
+generated.
+
+After Stage 6, the notebook creates a self-contained HTML pipeline report at
+`05_report/<sample>_pipeline_report.html`, including the Stage 1-6 summary tables and
+relative links to the PDFs and CSV export locations.
+
 ### Excluding specific pixels
 
 To drop individual noisy/damaged pixels from specific maps (rather than filtering by

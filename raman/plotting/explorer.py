@@ -8,7 +8,6 @@ from typing import Any, cast
 
 import numpy as np
 
-from ..core.analysis import select_max_intensity_pixel
 from ..core.baseline import _get_noiseaware_anchor_pairs
 
 ParsedMap = Mapping[str, Any]
@@ -193,51 +192,6 @@ def plot_pixel_spectrum_comparison(
     ax.set_ylabel("Intensity (CCD cts)")
     ax.grid(alpha=0.25)
     ax.legend(loc="best", fontsize=9)
-
-
-def save_pixel_spectrum_comparison(
-    parsed_item: ParsedMap,
-    output_path: Path,
-    *,
-    spectrum_key: str = "corrected_spectra_cube",
-    stage_label: str = "Baseline corrected",
-    figure_title: str | None = None,
-    highlight_wavenumber: float | None = None,
-    show_previous_overlay: bool = True,
-    show_baseline: bool = True,
-    show_noiseaware_anchors: bool = False,
-    previous_label: str = "Previous processed spectrum",
-    previous_parsed_item: ParsedMap | None = None,
-    previous_spectrum_key: str = "spectra_cube",
-    baseline_label: str | None = None,
-) -> tuple[int, int]:
-    """Save a single pixel spectrum comparison figure and return the selected pixel."""
-    import matplotlib.pyplot as plt
-
-    row_index, col_index = select_max_intensity_pixel(parsed_item, spectrum_key=spectrum_key)
-    fig, ax = plt.subplots(figsize=(10, 5.2))
-    plot_pixel_spectrum_comparison(
-        ax=ax,
-        parsed_item=parsed_item,
-        row_index=row_index,
-        col_index=col_index,
-        spectrum_key=spectrum_key,
-        stage_label=stage_label,
-        figure_title=figure_title,
-        highlight_wavenumber=highlight_wavenumber,
-        show_previous_overlay=show_previous_overlay,
-        show_baseline=show_baseline,
-        show_noiseaware_anchors=show_noiseaware_anchors,
-        previous_label=previous_label,
-        previous_parsed_item=previous_parsed_item,
-        previous_spectrum_key=previous_spectrum_key,
-        baseline_label=baseline_label,
-    )
-    fig.tight_layout()
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    fig.savefig(output_path, dpi=200, bbox_inches="tight")
-    plt.close(fig)
-    return row_index, col_index
 
 
 def _plot_average_pixel_overlay(map_ax, item: ParsedMap) -> int:

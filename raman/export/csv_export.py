@@ -35,39 +35,6 @@ def _export_spectra_per_file(
         one_df.to_csv(output_dir / f"{prefixed_stem}_{file_suffix}.csv", index=False)
 
 
-def _export_pixel_spectrum_csv(
-    parsed_item: dict,
-    output_path: Path,
-    *,
-    row_index: int,
-    col_index: int,
-    spectrum_key: str = "corrected_spectra_cube",
-    previous_spectrum_key: str = "spectra_cube",
-) -> None:
-    """Export max-signal pixel traces used in the comparison plot as CSV."""
-    wavenumber = np.asarray(parsed_item["wavenumber_cm1"], dtype=float)
-    current = np.asarray(parsed_item[spectrum_key][row_index, col_index, :], dtype=float)
-
-    export_df = pd.DataFrame(
-        {
-            "wavenumber_cm1": wavenumber,
-            "intensity": current,
-        }
-    )
-
-    if previous_spectrum_key in parsed_item:
-        previous = np.asarray(parsed_item[previous_spectrum_key][row_index, col_index, :], dtype=float)
-        export_df["previous_processed_intensity"] = previous
-
-    if "baseline_cube" in parsed_item:
-        baseline = np.asarray(parsed_item["baseline_cube"][row_index, col_index, :], dtype=float)
-        export_df["baseline_intensity"] = baseline
-
-    export_df.insert(0, "col_index", int(col_index))
-    export_df.insert(0, "row_index", int(row_index))
-    export_df.to_csv(output_path.with_suffix(".csv"), index=False)
-
-
 def _export_cut_pixel_map_slice_csv(
     parsed_item: dict,
     output_path: Path,

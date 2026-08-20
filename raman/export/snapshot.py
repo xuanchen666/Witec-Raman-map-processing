@@ -11,14 +11,12 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
-from ..core.analysis import _item_has_cut_pixels, select_max_intensity_pixel
+from ..core.analysis import _item_has_cut_pixels
 from ..core.metadata import infer_sample_name
-from ..plotting.explorer import save_pixel_spectrum_comparison
-from ..plotting.maps import _save_cut_pixel_map_slice, _save_despiked_baseline_anchor_stack
+from ..plotting.maps import _save_cut_pixel_map_slice
 from .csv_export import (
     _export_cut_pixel_map_slice_csv,
     _export_despiked_baseline_anchor_stack_csv,
-    _export_pixel_spectrum_csv,
     _export_spectra_per_file,
 )
 from .paths import _EXPORT_PART_PREFIXES, _prefix_indexed_stem, _prepare_export_subdir, _sanitize_export_stem
@@ -99,7 +97,6 @@ def export_stage6_outputs(
     )
 
     if corrected_parsed_files:
-        max_dir = _prepare_export_subdir(output_dir, "plots", "max_signal")
         cut_map_dir = _prepare_export_subdir(output_dir, "plots", "cutpixel_map")
         despiked_baseline_anchor_stack_dir = _prepare_export_subdir(
             output_dir,
@@ -107,109 +104,66 @@ def export_stage6_outputs(
             "despiked_baseline_anchor_stack",
         )
         requested_wn_stem = str(float(cut_pixel_map_wavenumber_cm1)).replace(".", "p")
+        cutpixel_map_pdf_path = cut_map_dir / "stage6_cutpixel_map.pdf"
 
-        max_manifest: list[dict] = []
         cut_map_manifest: list[dict] = []
         despiked_baseline_anchor_stack_manifest: list[dict] = []
-        for index, item in enumerate(corrected_parsed_files, start=1):
-            file_name = item["path"].name
-            safe_stem = _sanitize_export_stem(file_name)
-            prefixed_stem = _prefix_indexed_stem(safe_stem, index=index)
-            row_index, col_index = select_max_intensity_pixel(
-                parsed_item=item,
-                spectrum_key="corrected_spectra_cube",
-            )
-            output_path = max_dir / f"{prefixed_stem}.png"
-            row_index, col_index = save_pixel_spectrum_comparison(
-                parsed_item=item,
-                output_path=output_path,
-                spectrum_key="corrected_spectra_cube",
-                stage_label="Baseline corrected",
-                figure_title=(
-                    "Highest maximum signal after baseline correction "
-                    f"| {file_name} | Pixel ({row_index}, {col_index})"
-                ),
-                highlight_wavenumber=None,
-                show_previous_overlay=True,
-                show_baseline=True,
-                show_noiseaware_anchors=True,
-                previous_label="Previous processed spectrum",
-            )
-            max_manifest.append(
-                {
-                    "file": file_name,
-                    "row_index": int(row_index),
-                    "col_index": int(col_index),
-                    "highest_max_signal_after_baseline": float(
-                        np.nanmax(np.asarray(item["corrected_spectra_cube"], dtype=float))
-                    ),
-                    "image_path": str(output_path),
-                }
-            )
-            _export_pixel_spectrum_csv(
-                parsed_item=item,
-                output_path=output_path,
-                row_index=int(row_index),
-                col_index=int(col_index),
-                spectrum_key="corrected_spectra_cube",
-                previous_spectrum_key="spectra_cube",
-            )
+        # Lazy import keeps matplotlib out of this module until an export actually runs.
+        from matplotlib.backends.backend_pdf import PdfPages
 
-            if _item_has_cut_pixels(item, spectrum_key="corrected_spectra_cube"):
-                cut_map_output_path = cut_map_dir / f"{prefixed_stem}_{requested_wn_stem}cm-1.png"
-                used_wavenumber = _save_cut_pixel_map_slice(
+        with PdfPages(cutpixel_map_pdf_path) as cutpixel_map_pdf:
+            page_index = 0
+            for index, item in enumerate(corrected_parsed_files, start=1):
+                file_name = item["path"].name
+                safe_stem = _sanitize_export_stem(file_name)
+                prefixed_stem = _prefix_indexed_stem(safe_stem, index=index)
+
+                if _item_has_cut_pixels(item, spectrum_key="corrected_spectra_cube"):
+                    cut_map_csv_path = cut_map_dir / f"{prefixed_stem}_{requested_wn_stem}cm-1.csv"
+                    used_wavenumber = _save_cut_pixel_map_slice(
+                        parsed_item=item,
+                        output_path=cut_map_csv_path,
+                        spectrum_key="corrected_spectra_cube",
+                        color_scale_wavenumber_cm1=cut_pixel_map_wavenumber_cm1,
+                        pdf=cutpixel_map_pdf,
+                    )
+                    page_index += 1
+                    _export_cut_pixel_map_slice_csv(
+                        parsed_item=item,
+                        output_path=cut_map_csv_path,
+                        used_wavenumber_cm1=used_wavenumber,
+                        spectrum_key="corrected_spectra_cube",
+                    )
+                    keep_mask = np.asarray(item.get("spectrum_keep_mask"), dtype=bool)
+                    pixels_available = int(np.count_nonzero(keep_mask)) if keep_mask.ndim == 2 else np.nan
+                    pixels_total = int(keep_mask.size) if keep_mask.ndim == 2 else np.nan
+                    cut_map_manifest.append(
+                        {
+                            "file": file_name,
+                            "color_scale_wavenumber_cm1": used_wavenumber,
+                            "requested_wavenumber_cm1": float(cut_pixel_map_wavenumber_cm1),
+                            "pixels_available": pixels_available,
+                            "pixels_total": pixels_total,
+                            "pdf_path": str(cutpixel_map_pdf_path),
+                            "page_index": page_index,
+                        }
+                    )
+
+                stack_csv_path = despiked_baseline_anchor_stack_dir / f"{prefixed_stem}.csv"
+                _export_despiked_baseline_anchor_stack_csv(
                     parsed_item=item,
-                    output_path=cut_map_output_path,
-                    spectrum_key="corrected_spectra_cube",
-                    color_scale_wavenumber_cm1=cut_pixel_map_wavenumber_cm1,
+                    output_path=stack_csv_path,
+                    despiked_key="spectra_cube",
+                    baseline_key="baseline_cube",
+                    anchor_mask_key="noiseaware_anchor_mask_cube",
                 )
-                _export_cut_pixel_map_slice_csv(
-                    parsed_item=item,
-                    output_path=cut_map_output_path,
-                    used_wavenumber_cm1=used_wavenumber,
-                    spectrum_key="corrected_spectra_cube",
-                )
-                keep_mask = np.asarray(item.get("spectrum_keep_mask"), dtype=bool)
-                pixels_available = int(np.count_nonzero(keep_mask)) if keep_mask.ndim == 2 else np.nan
-                pixels_total = int(keep_mask.size) if keep_mask.ndim == 2 else np.nan
-                cut_map_manifest.append(
+                despiked_baseline_anchor_stack_manifest.append(
                     {
                         "file": file_name,
-                        "color_scale_wavenumber_cm1": used_wavenumber,
-                        "requested_wavenumber_cm1": float(cut_pixel_map_wavenumber_cm1),
-                        "pixels_available": pixels_available,
-                        "pixels_total": pixels_total,
-                        "image_path": str(cut_map_output_path),
+                        "csv_path": str(stack_csv_path.with_suffix(".csv")),
                     }
                 )
 
-            stack_output_path = despiked_baseline_anchor_stack_dir / f"{prefixed_stem}.png"
-            stack_summary = _save_despiked_baseline_anchor_stack(
-                parsed_item=item,
-                output_path=stack_output_path,
-                despiked_key="spectra_cube",
-                baseline_key="baseline_cube",
-                anchor_mask_key="noiseaware_anchor_mask_cube",
-            )
-            _export_despiked_baseline_anchor_stack_csv(
-                parsed_item=item,
-                output_path=stack_output_path,
-                despiked_key="spectra_cube",
-                baseline_key="baseline_cube",
-                anchor_mask_key="noiseaware_anchor_mask_cube",
-            )
-            despiked_baseline_anchor_stack_manifest.append(
-                {
-                    "file": file_name,
-                    "image_path": str(stack_output_path),
-                    **stack_summary,
-                }
-            )
-
-        pd.DataFrame(max_manifest).to_csv(
-            max_dir / "manifest.csv",
-            index=False,
-        )
         if cut_map_manifest:
             cut_map_manifest_df = pd.DataFrame(cut_map_manifest)
         else:

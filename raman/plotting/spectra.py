@@ -11,6 +11,7 @@ import pandas as pd
 
 if TYPE_CHECKING:
     import matplotlib.pyplot as plt
+    from matplotlib.backends.backend_pdf import PdfPages
 
 from ..config import (
     NORMALIZATION_METHOD,
@@ -309,6 +310,8 @@ def plot_grouped_spectra(
     wavenumber_min: float | None = None,
     wavenumber_max: float | None = None,
     output_path: Path | None = None,
+    pdf: "PdfPages | None" = None,
+    show: bool = True,
 ) -> plt.Figure | None:
     """Plot stacked spectra and optionally export one figure per group."""
     import matplotlib.pyplot as plt
@@ -371,7 +374,10 @@ def plot_grouped_spectra(
             else:
                 target_path = _build_per_group_output_path(output_path, group_name, export_index)
             target_path.parent.mkdir(parents=True, exist_ok=True)
-            fig.savefig(target_path, dpi=200, bbox_inches="tight")
+            if pdf is not None:
+                pdf.savefig(fig, dpi=200, bbox_inches="tight")
+            else:
+                fig.savefig(target_path, dpi=200, bbox_inches="tight")
             _export_grouped_spectra_plot_csv(
                 subset=subset,
                 value_col=value_col,
@@ -379,7 +385,10 @@ def plot_grouped_spectra(
                 target_path=target_path,
                 offset_step=group_data["offset_step"],
             )
-        plt.show()
+        if show:
+            plt.show()
+        else:
+            plt.close(fig)
         last_fig = fig
 
     return last_fig
@@ -394,6 +403,8 @@ def plot_normalized_overlap_by_group(
     output_dir: Path | None = None,
     group_col: str = "group",
     output_name_suffix: str | None = None,
+    pdf: "PdfPages | None" = None,
+    show: bool = True,
 ) -> list[Path]:
     """Plot non-stacked normalized overlaps per group and optionally export PNGs."""
     import matplotlib.pyplot as plt
@@ -460,7 +471,10 @@ def plot_normalized_overlap_by_group(
             if output_name_suffix:
                 out_name = f"{out_name}_{output_name_suffix}"
             out_path = output_dir / f"{out_name}.png"
-            fig.savefig(out_path, dpi=200, bbox_inches="tight")
+            if pdf is not None:
+                pdf.savefig(fig, dpi=200, bbox_inches="tight")
+            else:
+                fig.savefig(out_path, dpi=200, bbox_inches="tight")
             _export_overlap_plot_csv(
                 subset=subset,
                 group_col=group_col,
@@ -468,7 +482,10 @@ def plot_normalized_overlap_by_group(
             )
             exported_paths.append(out_path)
 
-        plt.show()
+        if show:
+            plt.show()
+        else:
+            plt.close(fig)
 
     return exported_paths
 
@@ -489,10 +506,15 @@ def plot_average_and_normalized_map_spectra(
     peak_ratio_wavenumber_ranges: object = PEAK_RATIO_WAVENUMBER_RANGES,
     output_dir: Path | None = None,
     sample_name: str | None = None,
+    pdf: "PdfPages | None" = None,
+    show: bool = True,
 ) -> pd.DataFrame:
     """Build per-map average spectra, then plot raw and normalized versions.
 
     Peak-ratio windows are configured independently from plot/export windows.
+    When `pdf` is provided, every figure this function draws is appended to that
+    shared multi-page PDF instead of being saved as an individual PNG. Set
+    `show=False` to skip inline display of each figure in the notebook.
     """
     avg_map_spectra = build_average_map_spectra(
         parsed_collection=parsed_collection,
@@ -597,6 +619,8 @@ def plot_average_and_normalized_map_spectra(
             wavenumber_min=range_min,
             wavenumber_max=range_max,
             output_path=current_raw_output_path,
+            pdf=pdf,
+            show=show,
         )
 
         plot_grouped_spectra(
@@ -612,6 +636,8 @@ def plot_average_and_normalized_map_spectra(
             wavenumber_min=range_min,
             wavenumber_max=range_max,
             output_path=current_norm_output_path,
+            pdf=pdf,
+            show=show,
         )
 
         plot_normalized_overlap_by_group(
@@ -623,6 +649,8 @@ def plot_average_and_normalized_map_spectra(
             output_dir=_prepare_export_subdir(output_dir, "plots", "norm_overlap", "groups") if output_dir is not None else None,
             group_col="group",
             output_name_suffix=range_suffix,
+            pdf=pdf,
+            show=show,
         )
 
         if len(hbn_subgroups) > 1:
@@ -655,6 +683,8 @@ def plot_average_and_normalized_map_spectra(
                 wavenumber_min=range_min,
                 wavenumber_max=range_max,
                 output_path=subgroup_raw_output_path,
+                pdf=pdf,
+                show=show,
             )
 
             plot_grouped_spectra(
@@ -670,6 +700,8 @@ def plot_average_and_normalized_map_spectra(
                 wavenumber_min=range_min,
                 wavenumber_max=range_max,
                 output_path=subgroup_norm_output_path,
+                pdf=pdf,
+                show=show,
             )
 
             plot_normalized_overlap_by_group(
@@ -681,6 +713,8 @@ def plot_average_and_normalized_map_spectra(
                 output_dir=_prepare_export_subdir(output_dir, "plots", "norm_overlap", "hbn_subgroups") if output_dir is not None else None,
                 group_col="subgroup",
                 output_name_suffix=range_suffix,
+                pdf=pdf,
+                show=show,
             )
 
     if len(hbn_subgroups) > 1:
@@ -710,6 +744,8 @@ def plot_average_and_normalized_map_spectra(
                 groups=hbn_subgroups,
                 output_path=subgroup_peak_ratio_output_path,
                 group_col="subgroup",
+                pdf=pdf,
+                show=show,
             )
 
     return avg_map_spectra
@@ -720,6 +756,8 @@ def plot_peak_ratio_by_date(
     groups: Iterable[str] = ("Au", "RO", "hBN"),
     output_path: Path | None = None,
     group_col: str = "group",
+    pdf: "PdfPages | None" = None,
+    show: bool = True,
 ) -> plt.Figure | None:
     """Plot per-spectrum peak height ratio trends over date.
 
@@ -816,13 +854,19 @@ def plot_peak_ratio_by_date(
             else:
                 target_path = _build_per_group_output_path(output_path, group_name, export_index)
             target_path.parent.mkdir(parents=True, exist_ok=True)
-            fig.savefig(target_path, dpi=200, bbox_inches="tight")
+            if pdf is not None:
+                pdf.savefig(fig, dpi=200, bbox_inches="tight")
+            else:
+                fig.savefig(target_path, dpi=200, bbox_inches="tight")
             _export_peak_ratio_plot_csv(
                 subset=subset,
                 date_label_map=date_label_map,
                 target_path=target_path,
             )
-        plt.show()
+        if show:
+            plt.show()
+        else:
+            plt.close(fig)
         last_fig = fig
 
     return last_fig
