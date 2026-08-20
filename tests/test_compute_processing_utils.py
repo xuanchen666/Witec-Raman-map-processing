@@ -8,6 +8,7 @@ import sys
 
 import numpy as np
 
+import raman_explorer as rex
 import raman_processing_utils as rpu
 
 
@@ -112,8 +113,8 @@ def test_compute_pixel_spectrum_comparison_data_anchor_mask_fallback():
 
 def test_build_map_image_modes():
     cube = np.arange(2 * 2 * 3, dtype=float).reshape(2, 2, 3)
-    slice_image = rpu._build_map_image(cube, "slice", wn_idx=1)
+    slice_image = rex._build_map_image(cube, "slice", wn_idx=1)
     np.testing.assert_array_equal(slice_image, cube[:, :, 1])
 
-    mean_image = rpu._build_map_image(cube, "mean", wn_idx=0)
+    mean_image = rex._build_map_image(cube, "mean", wn_idx=0)
     np.testing.assert_array_almost_equal(mean_image, np.nanmean(cube, axis=2))
