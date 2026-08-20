@@ -1,14 +1,22 @@
-"""Noise-aware automatic baseline subtraction for Raman spectra."""
+"""Baseline correction for Raman spectra: MOR/airPLS/poly/rolling_ball dispatch plus noise-aware fitting."""
 
 from __future__ import annotations
 
+from collections.abc import Mapping, Sequence
 from pathlib import Path
-from typing import cast
+from typing import Any, cast
 
 import numpy as np
+from pybaselines import Baseline
 from scipy.interpolate import PchipInterpolator, UnivariateSpline
 from scipy.ndimage import binary_dilation, label, percentile_filter, uniform_filter1d
 from scipy.signal import find_peaks
+
+# Shared aliases used throughout this module to make function signatures easier to read.
+ParsedMap = Mapping[str, Any]
+ParsedMapMutable = dict[str, Any]
+ParsedCollection = Sequence[ParsedMap]
+ParsedCollectionMutable = list[ParsedMapMutable]
 
 
 def _normalize_anchor_indices(
@@ -637,3 +645,261 @@ def auto_baseline_noiseaware(
         else [float(value) for value in np.atleast_1d(forced_anchor_wavenumbers) if np.isfinite(value)],
     }
     return corrected, baseline, info
+
+
+def _build_poly_weights(
+    wavenumber: np.ndarray,
+    mask_regions: Sequence[tuple[float, float]] | None,
+) -> np.ndarray | None:
+    """Build per-point weights for poly baseline using user-provided wavenumber regions."""
+    if not mask_regions:
+        return None
+
+    weights = np.zeros_like(wavenumber, dtype=float)
+    for region_start, region_end in mask_regions:
+        lower = min(float(region_start), float(region_end))
+        upper = max(float(region_start), float(region_end))
+        weights[(wavenumber >= lower) & (wavenumber <= upper)] = 1.0
+
+    if not np.any(weights > 0):
+        raise ValueError("poly_mask_regions did not select any wavenumber points")
+
+    return weights
+
+
+def _build_noiseaware_anchor_mask(
+    wavenumber: np.ndarray,
+    anchor_x_values: Sequence[float] | None,
+) -> np.ndarray:
+    """Map stored noiseaware anchor x positions back to the spectrum grid."""
+    mask = np.zeros_like(wavenumber, dtype=bool)
+    if wavenumber.ndim != 1 or not anchor_x_values:
+        return mask
+
+    for anchor_x in np.asarray(anchor_x_values, dtype=float):
+        if not np.isfinite(anchor_x):
+            continue
+        insert_index = int(np.searchsorted(wavenumber, anchor_x))
+        candidate_indices = [
+            candidate_index
+            for candidate_index in (insert_index, insert_index - 1)
+            if 0 <= candidate_index < wavenumber.size
+        ]
+        if not candidate_indices:
+            continue
+
+        nearest_index = min(
+            candidate_indices,
+            key=lambda candidate_index: abs(float(wavenumber[candidate_index]) - float(anchor_x)),
+        )
+        mask[nearest_index] = True
+
+    return mask
+
+
+def _build_noiseaware_anchor_value_grid(shape: tuple[int, int]) -> np.ndarray:
+    """Create a per-pixel object grid for raw noiseaware anchor values."""
+    grid = np.empty(shape, dtype=object)
+    grid.fill(None)
+    return grid
+
+
+def _normalize_noiseaware_anchor_values(values: Sequence[float] | None) -> tuple[float, ...]:
+    """Store the exact Stage 5 pre-median anchor values as finite float tuples."""
+    if values is None:
+        return ()
+
+    normalized: list[float] = []
+    for value in values:
+        numeric_value = float(value)
+        if np.isfinite(numeric_value):
+            normalized.append(numeric_value)
+    return tuple(normalized)
+
+
+def apply_baseline_correction(
+    parsed_collection: ParsedCollection,
+    fixed_half_window: int | None,
+    window_kwargs: dict,
+    baseline_method: str = "mor",
+    airpls_kwargs: dict | None = None,
+    poly_kwargs: dict | None = None,
+    poly_mask_regions: Sequence[tuple[float, float]] | None = None,
+    rolling_ball_kwargs: dict | None = None,
+    noiseaware_kwargs: dict | None = None,
+    noiseaware_peak_regions: Sequence[tuple[float, float]] | None = None,
+) -> ParsedCollectionMutable:
+    """Fit and subtract a baseline for every spectrum of every map."""
+    corrected_collection = []
+    normalized_method = baseline_method.lower()
+
+    valid_methods = {"mor", "airpls", "poly", "rolling_ball", "noiseaware"}
+    if normalized_method not in valid_methods:
+        raise ValueError(f"baseline_method must be one of {sorted(valid_methods)}")
+
+    airpls_kwargs = {} if airpls_kwargs is None else airpls_kwargs
+    poly_kwargs = {} if poly_kwargs is None else poly_kwargs
+    rolling_ball_kwargs = {} if rolling_ball_kwargs is None else rolling_ball_kwargs
+    noiseaware_kwargs = {} if noiseaware_kwargs is None else noiseaware_kwargs
+    normalized_peak_regions = (
+        [(float(lower), float(upper)) for lower, upper in noiseaware_peak_regions]
+        if noiseaware_peak_regions
+        else []
+    )
+
+    for parsed in parsed_collection:
+        wavenumber = parsed["wavenumber_cm1"]
+        spectra_cube = parsed["spectra_cube"]
+        baseline_fitter = Baseline(x_data=wavenumber)
+        poly_weights = _build_poly_weights(
+            wavenumber=wavenumber,
+            mask_regions=poly_mask_regions,
+        )
+
+        baseline_cube = np.empty_like(spectra_cube, dtype=float)
+        corrected_cube = np.empty_like(spectra_cube, dtype=float)
+        stat_cube = np.full(spectra_cube.shape[:2], np.nan, dtype=float)
+        noiseaware_anchor_mask_cube = (
+            np.zeros_like(spectra_cube, dtype=bool)
+            if normalized_method == "noiseaware"
+            else None
+        )
+        noiseaware_anchor_x_values_grid = (
+            _build_noiseaware_anchor_value_grid(spectra_cube.shape[:2])
+            if normalized_method == "noiseaware"
+            else None
+        )
+        noiseaware_anchor_y_values_grid = (
+            _build_noiseaware_anchor_value_grid(spectra_cube.shape[:2])
+            if normalized_method == "noiseaware"
+            else None
+        )
+        if normalized_method == "mor":
+            stat_label = "half_window"
+        elif normalized_method == "airpls":
+            stat_label = "tol_history_len"
+        elif normalized_method == "poly":
+            stat_label = "mask_points"
+        elif normalized_method == "rolling_ball":
+            stat_label = "rolling_ball_half_window"
+        else:
+            stat_label = "anchors_used"
+
+        # Fit baseline per pixel so local differences are preserved.
+        for row_index in range(spectra_cube.shape[0]):
+            for col_index in range(spectra_cube.shape[1]):
+                spectrum = spectra_cube[row_index, col_index, :]
+                if not np.isfinite(spectrum).all():
+                    baseline_cube[row_index, col_index, :] = np.nan
+                    corrected_cube[row_index, col_index, :] = np.nan
+                    continue
+
+                if normalized_method == "mor":
+                    if fixed_half_window is None:
+                        baseline, params = baseline_fitter.mor(
+                            spectrum,
+                            window_kwargs=window_kwargs,
+                        )
+                        stat_value = int(params.get("half_window", 0))
+                    else:
+                        baseline, params = baseline_fitter.mor(
+                            spectrum,
+                            half_window=fixed_half_window,
+                        )
+                        stat_value = int(params.get("half_window", fixed_half_window))
+                else:
+                    if normalized_method == "airpls":
+                        baseline, params = baseline_fitter.airpls(
+                            spectrum,
+                            **airpls_kwargs,
+                        )
+                        stat_value = int(len(params.get("tol_history", [])))
+                    elif normalized_method == "poly":
+                        baseline, _ = baseline_fitter.poly(
+                            spectrum,
+                            weights=poly_weights,
+                            **poly_kwargs,
+                        )
+                        stat_value = int(np.count_nonzero(poly_weights)) if poly_weights is not None else int(len(wavenumber))
+                    elif normalized_method == "rolling_ball":
+                        baseline, params = baseline_fitter.rolling_ball(
+                            spectrum,
+                            **rolling_ball_kwargs,
+                        )
+                        stat_value = int(params.get("half_window", 0))
+                    elif normalized_method == "noiseaware":
+                        _, baseline, info = auto_baseline_noiseaware(
+                            wavenumber,
+                            spectrum,
+                            peak_regions=noiseaware_peak_regions,
+                            **noiseaware_kwargs,
+                        )
+                        stat_value = int(info["anchors_used"])
+                        anchor_x_values = _normalize_noiseaware_anchor_values(
+                            cast(Sequence[float] | None, info.get("anchor_x_pre_median")),
+                        )
+                        anchor_y_values = _normalize_noiseaware_anchor_values(
+                            cast(Sequence[float] | None, info.get("anchor_y_pre_median")),
+                        )
+                        if noiseaware_anchor_mask_cube is not None:
+                            noiseaware_anchor_mask_cube[row_index, col_index, :] = _build_noiseaware_anchor_mask(
+                                np.asarray(wavenumber, dtype=float),
+                                anchor_x_values,
+                            )
+                        if noiseaware_anchor_x_values_grid is not None:
+                            noiseaware_anchor_x_values_grid[row_index, col_index] = anchor_x_values
+                        if noiseaware_anchor_y_values_grid is not None:
+                            noiseaware_anchor_y_values_grid[row_index, col_index] = anchor_y_values
+
+                baseline_cube[row_index, col_index, :] = baseline
+                corrected_cube[row_index, col_index, :] = spectrum - baseline
+                stat_cube[row_index, col_index] = stat_value
+
+        corrected_item = {
+            **parsed,
+            "baseline_cube": baseline_cube,
+            "corrected_spectra_cube": corrected_cube,
+            "baseline_method": normalized_method,
+            "baseline_stat_cube": stat_cube,
+            "baseline_stat_label": stat_label,
+            "baseline_fit_config": {
+                "noiseaware_kwargs": dict(noiseaware_kwargs),
+                "noiseaware_peak_regions": normalized_peak_regions,
+            },
+        }
+        if normalized_method == "mor":
+            corrected_item["mor_half_window_cube"] = stat_cube
+        elif normalized_method == "airpls":
+            corrected_item["airpls_iteration_cube"] = stat_cube
+        elif normalized_method == "poly":
+            corrected_item["poly_mask_points_cube"] = stat_cube
+        elif normalized_method == "rolling_ball":
+            corrected_item["rolling_ball_half_window_cube"] = stat_cube
+        elif normalized_method == "noiseaware":
+            corrected_item["noiseaware_anchors_used_cube"] = stat_cube
+            if noiseaware_anchor_mask_cube is not None:
+                corrected_item["noiseaware_anchor_mask_cube"] = noiseaware_anchor_mask_cube
+            if noiseaware_anchor_x_values_grid is not None:
+                corrected_item["noiseaware_anchor_x_values_grid"] = noiseaware_anchor_x_values_grid
+            if noiseaware_anchor_y_values_grid is not None:
+                corrected_item["noiseaware_anchor_y_values_grid"] = noiseaware_anchor_y_values_grid
+
+        corrected_collection.append(corrected_item)
+
+    return corrected_collection
+
+
+def apply_mor_baseline(
+    parsed_collection: ParsedCollection,
+    fixed_half_window: int | None,
+    window_kwargs: dict,
+) -> ParsedCollectionMutable:
+    """Backward-compatible wrapper for MOR-only baseline correction."""
+    return apply_baseline_correction(
+        parsed_collection=parsed_collection,
+        baseline_method="mor",
+        fixed_half_window=fixed_half_window,
+        window_kwargs=window_kwargs,
+        airpls_kwargs={},
+    )
+

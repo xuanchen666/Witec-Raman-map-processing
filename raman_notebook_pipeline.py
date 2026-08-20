@@ -20,8 +20,8 @@ from raman_config import (
     SPECTRUM_GATE_WAVENUMBER_REGION_CM1,
 )
 from raman_parser import ParsedRamanExport, parse_raman_export
+from raman_baseline import apply_baseline_correction
 from raman_processing_utils import (
-    apply_baseline_correction,
     despike_parsed_collection,
     filter_spectra_by_border_pixels,
     filter_spectra_by_max_intensity,
