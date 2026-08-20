@@ -1,71 +1,243 @@
-"""Interactive Raman map explorer widget and its snapshot persistence.
-
-Split out of raman_processing_utils.py so matplotlib/ipywidgets code stays isolated
-from the pure computation helpers used by the rest of the pipeline.
-"""
+"""Interactive Raman map explorer widget (matplotlib + ipywidgets)."""
 
 from __future__ import annotations
 
+from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any, cast
 
 import numpy as np
 
-from raman_processing_utils import (
-    ParsedMap,
-    StageCollections,
-    StageSpectrumKeys,
-    _get_noiseaware_anchor_pairs,
-    plot_pixel_spectrum_comparison,
-)
+from ..core.analysis import select_max_intensity_pixel
+from ..core.baseline import _get_noiseaware_anchor_pairs
+
+ParsedMap = Mapping[str, Any]
+StageCollections = Mapping[str, Sequence[ParsedMap]]
+StageSpectrumKeys = Mapping[str, str]
 
 
-def save_explorer_snapshot(
-    output_dir: Path,
-    stage_collections: StageCollections,
-    stage_spectrum_keys: StageSpectrumKeys,
-    map_mode: str = "max",
-) -> Path:
-    """Persist all explorer stage data to a timestamped gzip-compressed pickle file."""
-    import gzip
-    import pickle
-    from datetime import datetime
+def _compute_pixel_spectrum_comparison_data(
+    parsed_item: ParsedMap,
+    row_index: int,
+    col_index: int,
+    *,
+    spectrum_key: str = "corrected_spectra_cube",
+    stage_label: str = "Baseline corrected",
+    show_previous_overlay: bool = True,
+    show_baseline: bool = True,
+    show_noiseaware_anchors: bool = False,
+    previous_label: str = "Previous processed spectrum",
+    previous_parsed_item: ParsedMap | None = None,
+    previous_spectrum_key: str = "spectra_cube",
+    baseline_label: str | None = None,
+) -> dict[str, object]:
+    """Resolve traces/labels for the pixel spectrum comparison plot (no plotting)."""
+    wavenumber = np.asarray(parsed_item["wavenumber_cm1"], dtype=float)
+    selected_spectrum = np.asarray(parsed_item[spectrum_key][row_index, col_index, :], dtype=float)
 
-    output_dir = Path(output_dir)
-    output_dir.mkdir(parents=True, exist_ok=True)
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    output_path = output_dir / f"explorer_snapshot_{timestamp}.pkl.gz"
+    previous_trace: dict[str, object] | None = None
+    if show_previous_overlay and previous_parsed_item is not None and previous_spectrum_key in previous_parsed_item:
+        previous_spectrum = np.asarray(previous_parsed_item[previous_spectrum_key][row_index, col_index, :], dtype=float)
+        previous_wavenumber = np.asarray(previous_parsed_item.get("wavenumber_cm1", wavenumber), dtype=float)
+        if previous_wavenumber.shape[0] != previous_spectrum.shape[0]:
+            # Fallback to the current stage axis only when dimensions match.
+            if wavenumber.shape[0] == previous_spectrum.shape[0]:
+                previous_wavenumber = wavenumber
+            else:
+                min_len = min(previous_wavenumber.shape[0], previous_spectrum.shape[0])
+                previous_wavenumber = previous_wavenumber[:min_len]
+                previous_spectrum = previous_spectrum[:min_len]
+        previous_trace = {
+            "wavenumber": previous_wavenumber,
+            "intensity": previous_spectrum,
+            "label": previous_label,
+        }
+    elif show_previous_overlay and spectrum_key != "spectra_cube" and "spectra_cube" in parsed_item:
+        previous_spectrum = np.asarray(parsed_item["spectra_cube"][row_index, col_index, :], dtype=float)
+        previous_trace = {
+            "wavenumber": wavenumber,
+            "intensity": previous_spectrum,
+            "label": previous_label,
+        }
 
-    snapshot = {
-        "stage_collections": {stage: list(items) for stage, items in stage_collections.items()},
-        "stage_spectrum_keys": dict(stage_spectrum_keys),
-        "map_mode": map_mode,
+    baseline_trace: dict[str, object] | None = None
+    if show_baseline and "baseline_cube" in parsed_item:
+        baseline = np.asarray(parsed_item["baseline_cube"][row_index, col_index, :], dtype=float)
+        resolved_baseline_label = baseline_label or f"{str(parsed_item.get('baseline_method', 'baseline')).upper()} baseline"
+        baseline_trace = {
+            "wavenumber": wavenumber,
+            "intensity": baseline,
+            "label": resolved_baseline_label,
+        }
+
+    anchor_x = np.asarray([], dtype=float)
+    anchor_y = np.asarray([], dtype=float)
+    if show_noiseaware_anchors:
+        baseline_method = str(parsed_item.get("baseline_method", "")).lower()
+        if baseline_method == "noiseaware":
+            # Anchors belong to the pre-baseline signal (previous processed spectrum),
+            # not the already baseline-corrected curve.
+            if spectrum_key != "spectra_cube" and "spectra_cube" in parsed_item:
+                anchor_source_spectrum = np.asarray(parsed_item["spectra_cube"][row_index, col_index, :], dtype=float)
+            else:
+                anchor_source_spectrum = selected_spectrum
+
+            anchor_pairs = _get_noiseaware_anchor_pairs(parsed_item, row_index, col_index)
+            if anchor_pairs:
+                # Use the persisted exact pre-median x/y values rather than snapping to the grid.
+                anchor_x = np.asarray([pair[0] for pair in anchor_pairs], dtype=float)
+                anchor_y = np.asarray([pair[1] for pair in anchor_pairs], dtype=float)
+            elif "noiseaware_anchor_mask_cube" in parsed_item:
+                anchor_mask = np.asarray(parsed_item["noiseaware_anchor_mask_cube"][row_index, col_index, :], dtype=bool)
+                if anchor_mask.shape[0] != wavenumber.shape[0] or anchor_mask.shape[0] != anchor_source_spectrum.shape[0]:
+                    anchor_mask = np.zeros_like(wavenumber, dtype=bool)
+                finite_anchor_mask = anchor_mask & np.isfinite(wavenumber) & np.isfinite(anchor_source_spectrum)
+                anchor_x = wavenumber[finite_anchor_mask]
+                anchor_y = anchor_source_spectrum[finite_anchor_mask]
+
+            if anchor_x.size and anchor_x.size > 250:
+                sample_step = max(1, anchor_x.size // 250)
+                anchor_x = anchor_x[::sample_step]
+                anchor_y = anchor_y[::sample_step]
+
+    return {
+        "wavenumber": wavenumber,
+        "selected_spectrum": selected_spectrum,
+        "stage_label": stage_label,
+        "previous_trace": previous_trace,
+        "baseline_trace": baseline_trace,
+        "anchor_x": anchor_x,
+        "anchor_y": anchor_y,
     }
-    with gzip.open(output_path, "wb") as handle:
-        pickle.dump(snapshot, handle, protocol=pickle.HIGHEST_PROTOCOL)
-
-    return output_path
 
 
-def find_latest_explorer_snapshot(snapshot_dir: Path) -> Path:
-    """Return the most recently saved `explorer_snapshot_*.pkl.gz` file in a directory."""
-    snapshot_dir = Path(snapshot_dir)
-    candidates = sorted(snapshot_dir.glob("explorer_snapshot_*.pkl.gz"))
-    if not candidates:
-        raise FileNotFoundError(f"No explorer snapshot files found in: {snapshot_dir}")
-    return candidates[-1]
+def plot_pixel_spectrum_comparison(
+    ax,
+    parsed_item: ParsedMap,
+    row_index: int,
+    col_index: int,
+    *,
+    spectrum_key: str = "corrected_spectra_cube",
+    stage_label: str = "Baseline corrected",
+    figure_title: str | None = None,
+    highlight_wavenumber: float | None = None,
+    show_previous_overlay: bool = True,
+    show_baseline: bool = True,
+    show_noiseaware_anchors: bool = False,
+    previous_label: str = "Previous processed spectrum",
+    previous_parsed_item: ParsedMap | None = None,
+    previous_spectrum_key: str = "spectra_cube",
+    baseline_label: str | None = None,
+) -> None:
+    """Plot corrected, previous-stage, and baseline spectra on one axis."""
+    data = _compute_pixel_spectrum_comparison_data(
+        parsed_item,
+        row_index,
+        col_index,
+        spectrum_key=spectrum_key,
+        stage_label=stage_label,
+        show_previous_overlay=show_previous_overlay,
+        show_baseline=show_baseline,
+        show_noiseaware_anchors=show_noiseaware_anchors,
+        previous_label=previous_label,
+        previous_parsed_item=previous_parsed_item,
+        previous_spectrum_key=previous_spectrum_key,
+        baseline_label=baseline_label,
+    )
+
+    ax.plot(
+        data["wavenumber"],
+        data["selected_spectrum"],
+        color="tab:blue",
+        linewidth=1.5,
+        label=data["stage_label"],
+    )
+
+    if data["previous_trace"] is not None:
+        ax.plot(
+            data["previous_trace"]["wavenumber"],
+            data["previous_trace"]["intensity"],
+            color="0.45",
+            linewidth=1.0,
+            linestyle="--",
+            label=data["previous_trace"]["label"],
+        )
+
+    if data["baseline_trace"] is not None:
+        ax.plot(
+            data["baseline_trace"]["wavenumber"],
+            data["baseline_trace"]["intensity"],
+            color="tab:red",
+            linewidth=1.2,
+            linestyle=":",
+            label=data["baseline_trace"]["label"],
+        )
+
+    if data["anchor_x"].size and data["anchor_y"].size:
+        ax.scatter(
+            data["anchor_x"],
+            data["anchor_y"],
+            s=20,
+            facecolors="none",
+            edgecolors="tab:green",
+            linewidths=1.0,
+            alpha=0.9,
+            label="Background anchors (pre-median)",
+        )
+
+    if highlight_wavenumber is not None:
+        ax.axvline(float(highlight_wavenumber), color="tab:orange", linestyle="--", linewidth=1.0)
+
+    ax.set_title(figure_title or f"Pixel ({row_index}, {col_index})")
+    ax.set_xlabel("Wavenumber (cm$^{-1}$)")
+    ax.set_ylabel("Intensity (CCD cts)")
+    ax.grid(alpha=0.25)
+    ax.legend(loc="best", fontsize=9)
 
 
-def load_explorer_snapshot(input_path: Path) -> tuple[StageCollections, StageSpectrumKeys, str]:
-    """Load explorer stage data previously written by `save_explorer_snapshot`."""
-    import gzip
-    import pickle
+def save_pixel_spectrum_comparison(
+    parsed_item: ParsedMap,
+    output_path: Path,
+    *,
+    spectrum_key: str = "corrected_spectra_cube",
+    stage_label: str = "Baseline corrected",
+    figure_title: str | None = None,
+    highlight_wavenumber: float | None = None,
+    show_previous_overlay: bool = True,
+    show_baseline: bool = True,
+    show_noiseaware_anchors: bool = False,
+    previous_label: str = "Previous processed spectrum",
+    previous_parsed_item: ParsedMap | None = None,
+    previous_spectrum_key: str = "spectra_cube",
+    baseline_label: str | None = None,
+) -> tuple[int, int]:
+    """Save a single pixel spectrum comparison figure and return the selected pixel."""
+    import matplotlib.pyplot as plt
 
-    input_path = Path(input_path)
-    with gzip.open(input_path, "rb") as handle:
-        snapshot = pickle.load(handle)
-
-    return snapshot["stage_collections"], snapshot["stage_spectrum_keys"], snapshot["map_mode"]
+    row_index, col_index = select_max_intensity_pixel(parsed_item, spectrum_key=spectrum_key)
+    fig, ax = plt.subplots(figsize=(10, 5.2))
+    plot_pixel_spectrum_comparison(
+        ax=ax,
+        parsed_item=parsed_item,
+        row_index=row_index,
+        col_index=col_index,
+        spectrum_key=spectrum_key,
+        stage_label=stage_label,
+        figure_title=figure_title,
+        highlight_wavenumber=highlight_wavenumber,
+        show_previous_overlay=show_previous_overlay,
+        show_baseline=show_baseline,
+        show_noiseaware_anchors=show_noiseaware_anchors,
+        previous_label=previous_label,
+        previous_parsed_item=previous_parsed_item,
+        previous_spectrum_key=previous_spectrum_key,
+        baseline_label=baseline_label,
+    )
+    fig.tight_layout()
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(output_path, dpi=200, bbox_inches="tight")
+    plt.close(fig)
+    return row_index, col_index
 
 
 def _plot_average_pixel_overlay(map_ax, item: ParsedMap) -> int:
@@ -530,3 +702,4 @@ def launch_raman_map_explorer(
     display(viewer)
     _render()
     return viewer
+

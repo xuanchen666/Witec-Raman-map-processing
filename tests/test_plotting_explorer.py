@@ -1,4 +1,4 @@
-"""Headless tests for the pure-compute helpers in raman_processing_utils.py.
+"""Headless tests for the pure-compute helpers in raman/plotting/explorer.py.
 
 These tests must not require matplotlib: only numpy plus the target module
 are imported so batch/CI environments without a display can run them.
@@ -8,8 +8,7 @@ import sys
 
 import numpy as np
 
-import raman_explorer as rex
-import raman_processing_utils as rpu
+import raman.plotting.explorer as rpe
 
 
 def test_importing_modules_does_not_pull_in_matplotlib():
@@ -24,7 +23,7 @@ def test_compute_pixel_spectrum_comparison_data_basic():
         "corrected_spectra_cube": corrected.reshape(1, 1, 10),
     }
 
-    data = rpu._compute_pixel_spectrum_comparison_data(
+    data = rpe._compute_pixel_spectrum_comparison_data(
         parsed_item,
         row_index=0,
         col_index=0,
@@ -50,7 +49,7 @@ def test_compute_pixel_spectrum_comparison_data_previous_overlay_fallback():
         "spectra_cube": previous.reshape(1, 1, 10),
     }
 
-    data = rpu._compute_pixel_spectrum_comparison_data(
+    data = rpe._compute_pixel_spectrum_comparison_data(
         parsed_item,
         row_index=0,
         col_index=0,
@@ -73,7 +72,7 @@ def test_compute_pixel_spectrum_comparison_data_baseline_trace():
         "baseline_method": "mor",
     }
 
-    data = rpu._compute_pixel_spectrum_comparison_data(
+    data = rpe._compute_pixel_spectrum_comparison_data(
         parsed_item,
         row_index=0,
         col_index=0,
@@ -98,7 +97,7 @@ def test_compute_pixel_spectrum_comparison_data_anchor_mask_fallback():
         "noiseaware_anchor_mask_cube": anchor_mask.reshape(1, 1, 6),
     }
 
-    data = rpu._compute_pixel_spectrum_comparison_data(
+    data = rpe._compute_pixel_spectrum_comparison_data(
         parsed_item,
         row_index=0,
         col_index=0,
@@ -113,8 +112,8 @@ def test_compute_pixel_spectrum_comparison_data_anchor_mask_fallback():
 
 def test_build_map_image_modes():
     cube = np.arange(2 * 2 * 3, dtype=float).reshape(2, 2, 3)
-    slice_image = rex._build_map_image(cube, "slice", wn_idx=1)
+    slice_image = rpe._build_map_image(cube, "slice", wn_idx=1)
     np.testing.assert_array_equal(slice_image, cube[:, :, 1])
 
-    mean_image = rex._build_map_image(cube, "mean", wn_idx=0)
+    mean_image = rpe._build_map_image(cube, "mean", wn_idx=0)
     np.testing.assert_array_almost_equal(mean_image, np.nanmean(cube, axis=2))

@@ -12,7 +12,6 @@ from scipy.interpolate import PchipInterpolator, UnivariateSpline
 from scipy.ndimage import binary_dilation, label, percentile_filter, uniform_filter1d
 from scipy.signal import find_peaks
 
-# Shared aliases used throughout this module to make function signatures easier to read.
 ParsedMap = Mapping[str, Any]
 ParsedMapMutable = dict[str, Any]
 ParsedCollection = Sequence[ParsedMap]
@@ -902,4 +901,33 @@ def apply_mor_baseline(
         window_kwargs=window_kwargs,
         airpls_kwargs={},
     )
+
+
+def _get_noiseaware_anchor_pairs(
+    parsed_item: ParsedMap,
+    row_index: int,
+    col_index: int,
+) -> list[tuple[float, float]]:
+    """Return persisted Stage 5 pre-median anchor x/y pairs for one pixel."""
+    anchor_x_grid = parsed_item.get("noiseaware_anchor_x_values_grid")
+    anchor_y_grid = parsed_item.get("noiseaware_anchor_y_values_grid")
+    if anchor_x_grid is None or anchor_y_grid is None:
+        return []
+
+    anchor_x_grid = np.asarray(anchor_x_grid, dtype=object)
+    anchor_y_grid = np.asarray(anchor_y_grid, dtype=object)
+    if anchor_x_grid.ndim != 2 or anchor_y_grid.ndim != 2:
+        return []
+    if row_index >= anchor_x_grid.shape[0] or col_index >= anchor_x_grid.shape[1]:
+        return []
+    if row_index >= anchor_y_grid.shape[0] or col_index >= anchor_y_grid.shape[1]:
+        return []
+
+    anchor_x_values = _normalize_noiseaware_anchor_values(
+        cast(Sequence[float] | None, anchor_x_grid[row_index, col_index]),
+    )
+    anchor_y_values = _normalize_noiseaware_anchor_values(
+        cast(Sequence[float] | None, anchor_y_grid[row_index, col_index]),
+    )
+    return list(zip(anchor_x_values, anchor_y_values))
 

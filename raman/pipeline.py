@@ -8,7 +8,7 @@ from typing import TypedDict
 import numpy as np
 import pandas as pd
 
-from raman_config import (
+from .config import (
     BORDER_FILTER_APPLY_TO_GROUPS,
     BORDER_FILTER_BORDER_WIDTH,
     BORDER_FILTER_ENABLED,
@@ -19,16 +19,16 @@ from raman_config import (
     SPECTRUM_GATE_MIN_MEAN_INTENSITY,
     SPECTRUM_GATE_WAVENUMBER_REGION_CM1,
 )
-from raman_parser import ParsedRamanExport, parse_raman_export
-from raman_baseline import apply_baseline_correction
-from raman_processing_utils import (
+from .core.metadata import ParsedRamanExport, parse_raman_export
+from .core.baseline import apply_baseline_correction
+from .core.filters import (
     despike_parsed_collection,
     filter_spectra_by_border_pixels,
     filter_spectra_by_max_intensity,
     filter_spectra_by_wavenumber_region_mean,
     filter_low_wavenumber_region,
-    summarize_parsed_collection,
 )
+from .core.analysis import summarize_parsed_collection
 
 
 class Stage1ParseArtifacts(TypedDict):
@@ -494,3 +494,4 @@ def build_explorer_stage_mappings(
         stage_spectrum_keys["Stage 6 Map-average plotting"] = "corrected_spectra_cube"
 
     return stage_collections, stage_spectrum_keys
+

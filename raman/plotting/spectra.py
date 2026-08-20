@@ -1,9 +1,4 @@
-"""Matplotlib plotting/export functions for Raman map analysis.
-
-Split out of raman_map_analysis.py so that file only keeps pure computation
-(no matplotlib dependency). Depends on raman_map_analysis for pure builders
-and compute helpers.
-"""
+"""Spectrum-level plotting: stacked traces, normalized overlaps, peak-ratio trends."""
 
 from __future__ import annotations
 
@@ -17,28 +12,233 @@ import pandas as pd
 if TYPE_CHECKING:
     import matplotlib.pyplot as plt
 
-from raman_config import (
+from ..config import (
     NORMALIZATION_METHOD,
     NORMALIZATION_PEAK_CENTER_CM1,
     NORMALIZATION_PEAK_TOLERANCE_CM1,
     PEAK_RATIO_WAVENUMBER_RANGES,
     PLOT_WAVENUMBER_RANGES,
 )
-from raman_map_analysis import (
-    _compute_cut_pixel_map_slice_data,
-    _compute_despiked_baseline_anchor_stack_data,
-    _compute_grouped_spectra_data,
-    _extract_sample_code,
+from ..core.analysis import build_average_map_spectra, build_peak_ratio_table
+from ..core.metadata import _extract_sample_code, infer_sample_name
+from ..export.csv_export import (
+    _export_grouped_spectra_plot_csv,
+    _export_overlap_plot_csv,
+    _export_peak_ratio_plot_csv,
+)
+from ..export.paths import (
+    _build_wavenumber_range_stem,
+    _coerce_optional_wavenumber_bound,
     _prefix_indexed_stem,
     _prepare_export_subdir,
     _sanitize_export_stem,
-    _slice_spectrum_to_wavenumber_range,
-    build_average_map_spectra,
-    build_peak_ratio_table,
-    infer_sample_name,
-    normalize_spectrum,
-    resolve_plot_wavenumber_ranges,
 )
+from .maps import _compute_stack_step
+
+
+def minmax_norm(y: np.ndarray) -> np.ndarray:
+    """Scale one spectrum to [0, 1]."""
+    y_arr = np.asarray(y, dtype=float)
+    finite = y_arr[np.isfinite(y_arr)]
+    if finite.size == 0:
+        return np.zeros_like(y_arr, dtype=float)
+
+    y_min = float(np.min(finite))
+    y_max = float(np.max(finite))
+    if np.isclose(y_max, y_min):
+        return np.zeros_like(y_arr, dtype=float)
+    return (y_arr - y_min) / (y_max - y_min)
+
+
+def peak_window_norm(
+    y: np.ndarray,
+    x: np.ndarray,
+    peak_center_cm1: float = 1590,
+    peak_tolerance_cm1: float = 50,
+) -> np.ndarray:
+    """Scale one spectrum so the strongest point near `peak_center_cm1` is 1."""
+    y_arr = np.asarray(y, dtype=float)
+    x_arr = np.asarray(x, dtype=float)
+    mask = np.isfinite(x_arr) & np.isfinite(y_arr)
+    mask &= np.abs(x_arr - float(peak_center_cm1)) <= float(peak_tolerance_cm1)
+
+    if not np.any(mask):
+        return np.zeros_like(y_arr, dtype=float)
+
+    peak_height = float(np.max(y_arr[mask]))
+    if np.isclose(peak_height, 0.0):
+        peak_height = float(np.max(np.abs(y_arr[mask])))
+        if np.isclose(peak_height, 0.0):
+            return np.zeros_like(y_arr, dtype=float)
+
+    return y_arr / peak_height
+
+
+def normalize_spectrum(
+    y: np.ndarray,
+    x: np.ndarray,
+    normalization_method: str,
+    peak_center_cm1: float,
+    peak_tolerance_cm1: float,
+) -> np.ndarray:
+    """Normalize one spectrum according to the configured method."""
+    method = str(normalization_method).strip().lower()
+    if method == "minmax":
+        return minmax_norm(np.asarray(y, dtype=float))
+    if method == "peak_1590":
+        return peak_window_norm(
+            y=np.asarray(y, dtype=float),
+            x=np.asarray(x, dtype=float),
+            peak_center_cm1=peak_center_cm1,
+            peak_tolerance_cm1=peak_tolerance_cm1,
+        )
+    raise ValueError(
+        "Unsupported normalization_method. Use 'minmax' or 'peak_1590'."
+    )
+
+
+def _compute_grouped_spectra_data(
+    subset: pd.DataFrame,
+    value_col: str,
+    stack_scale: float,
+    stack_extra_gap: float,
+    wavenumber_min: float | None,
+    wavenumber_max: float | None,
+) -> dict[str, Any]:
+    """Compute sliced/stacked traces and offset step for one group panel (no plotting)."""
+    windows = [
+        _slice_spectrum_to_wavenumber_range(
+            wavenumber_cm1=row["wavenumber_cm1"],
+            intensity=row[value_col],
+            wavenumber_min=wavenumber_min,
+            wavenumber_max=wavenumber_max,
+        )
+        for _, row in subset.iterrows()
+    ]
+    offset_step = _compute_stack_step(
+        spectra=[window_y for _, window_y in windows],
+        stack_scale=stack_scale,
+        stack_extra_gap=stack_extra_gap,
+    )
+
+    labels = []
+    stacked_traces = []
+    for stack_index, ((_, row), (window_x, window_y)) in enumerate(zip(subset.iterrows(), windows)):
+        label_date = row["date"].strftime("%Y-%m-%d") if pd.notna(row["date"]) else "Unknown date"
+        stacked_traces.append((window_x, window_y + stack_index * offset_step))
+        labels.append(f"{label_date} | {row['file']}")
+
+    return {
+        "offset_step": offset_step,
+        "stacked_traces": stacked_traces,
+        "labels": labels,
+    }
+
+
+def resolve_plot_wavenumber_ranges(
+    wavenumber_ranges: object = PLOT_WAVENUMBER_RANGES,
+) -> list[dict[str, object]]:
+    """Resolve one configured range or multiple configured ranges for Stage 6 exports."""
+    if wavenumber_ranges is None:
+        return [
+            {
+                "wavenumber_min": None,
+                "wavenumber_max": None,
+                "label": None,
+                "export_stem_suffix": None,
+            }
+        ]
+
+    if isinstance(wavenumber_ranges, Mapping):
+        raw_range_specs = [wavenumber_ranges]
+    elif isinstance(wavenumber_ranges, (list, tuple)) and len(wavenumber_ranges) == 2 and not any(
+        isinstance(value, (list, tuple, Mapping)) for value in wavenumber_ranges
+    ):
+        raw_range_specs = [wavenumber_ranges]
+    elif isinstance(wavenumber_ranges, Iterable) and not isinstance(wavenumber_ranges, (str, bytes)):
+        raw_range_specs = list(wavenumber_ranges)
+    else:
+        raise ValueError(
+            "PLOT_WAVENUMBER_RANGES must be a single (min, max) tuple or an iterable of range tuples"
+        )
+
+    if not raw_range_specs:
+        raise ValueError("PLOT_WAVENUMBER_RANGES cannot be empty when provided")
+
+    resolved_ranges: list[dict[str, object]] = []
+    for range_spec in raw_range_specs:
+        label = None
+        raw_stack_scale_override = None
+        raw_stack_extra_gap_override = None
+        norm_stack_scale_override = None
+        norm_stack_extra_gap_override = None
+        if isinstance(range_spec, Mapping):
+            range_min = range_spec.get("min", range_spec.get("wavenumber_min"))
+            range_max = range_spec.get("max", range_spec.get("wavenumber_max"))
+            label = range_spec.get("label")
+            raw_stack_scale_override = range_spec.get("raw_stack_scale")
+            raw_stack_extra_gap_override = range_spec.get("raw_stack_extra_gap")
+            norm_stack_scale_override = range_spec.get("norm_stack_scale")
+            norm_stack_extra_gap_override = range_spec.get("norm_stack_extra_gap")
+        else:
+            try:
+                range_min, range_max = range_spec
+            except (TypeError, ValueError) as exc:
+                raise ValueError(
+                    "Each PLOT_WAVENUMBER_RANGES entry must be a 2-item tuple/list or a mapping"
+                ) from exc
+
+        resolved_min = _coerce_optional_wavenumber_bound(range_min)
+        resolved_max = _coerce_optional_wavenumber_bound(range_max)
+
+        if (
+            resolved_min is not None
+            and resolved_max is not None
+            and resolved_min > resolved_max
+        ):
+            raise ValueError("Each configured wavenumber range must satisfy min <= max")
+
+        resolved_ranges.append(
+            {
+                "wavenumber_min": resolved_min,
+                "wavenumber_max": resolved_max,
+                "label": None if label is None else str(label),
+                "export_stem_suffix": None,
+                "raw_stack_scale": raw_stack_scale_override,
+                "raw_stack_extra_gap": raw_stack_extra_gap_override,
+                "norm_stack_scale": norm_stack_scale_override,
+                "norm_stack_extra_gap": norm_stack_extra_gap_override,
+            }
+        )
+
+    if len(resolved_ranges) > 1:
+        for resolved_range in resolved_ranges:
+            resolved_range["export_stem_suffix"] = _build_wavenumber_range_stem(
+                resolved_range["wavenumber_min"],
+                resolved_range["wavenumber_max"],
+                label=resolved_range["label"],
+            )
+
+    return resolved_ranges
+
+
+def _slice_spectrum_to_wavenumber_range(
+    wavenumber_cm1: np.ndarray,
+    intensity: np.ndarray,
+    wavenumber_min: float | None,
+    wavenumber_max: float | None,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Return one spectrum restricted to the requested plotting window."""
+    x = np.asarray(wavenumber_cm1, dtype=float)
+    y = np.asarray(intensity, dtype=float)
+
+    mask = np.isfinite(x) & np.isfinite(y)
+    if wavenumber_min is not None:
+        mask &= x >= float(wavenumber_min)
+    if wavenumber_max is not None:
+        mask &= x <= float(wavenumber_max)
+
+    return x[mask], y[mask]
 
 
 def _resolve_group_value(
@@ -94,81 +294,6 @@ def _resolve_range_plot_value(
     if isinstance(override_value, Mapping):
         return {str(name): float(value) for name, value in override_value.items()}
     return float(override_value)
-
-
-def _export_grouped_spectra_plot_csv(
-    subset: pd.DataFrame,
-    value_col: str,
-    group_col: str,
-    target_path: Path,
-    offset_step: float,
-) -> None:
-    """Export plotted stacked traces as a sidecar CSV next to the PNG."""
-    rows: list[pd.DataFrame] = []
-    for stack_index, (_, row) in enumerate(subset.iterrows()):
-        wavenumber = np.asarray(row["wavenumber_cm1"], dtype=float)
-        intensity = np.asarray(row[value_col], dtype=float)
-        offset = float(stack_index) * float(offset_step)
-        rows.append(
-            pd.DataFrame(
-                {
-                    group_col: str(row[group_col]),
-                    "subgroup": row.get("subgroup"),
-                    "file": str(row["file"]),
-                    "date": row["date"],
-                    "stack_index": int(stack_index),
-                    "stack_offset": offset,
-                    "wavenumber_cm1": wavenumber,
-                    "intensity": intensity,
-                    "stacked_intensity": intensity + offset,
-                }
-            )
-        )
-
-    if not rows:
-        return
-
-    sidecar_path = target_path.with_suffix(".csv")
-    pd.concat(rows, ignore_index=True).to_csv(sidecar_path, index=False)
-
-
-def _export_overlap_plot_csv(
-    subset: pd.DataFrame,
-    group_col: str,
-    target_path: Path,
-) -> None:
-    """Export normalized overlap traces as a sidecar CSV next to the PNG."""
-    rows: list[pd.DataFrame] = []
-    for _, row in subset.iterrows():
-        rows.append(
-            pd.DataFrame(
-                {
-                    group_col: str(row[group_col]),
-                    "subgroup": row.get("subgroup"),
-                    "file": str(row["file"]),
-                    "date": row["date"],
-                    "wavenumber_cm1": np.asarray(row["wavenumber_cm1"], dtype=float),
-                    "normalized_intensity": np.asarray(row["mean_spectrum_norm"], dtype=float),
-                }
-            )
-        )
-
-    if not rows:
-        return
-
-    sidecar_path = target_path.with_suffix(".csv")
-    pd.concat(rows, ignore_index=True).to_csv(sidecar_path, index=False)
-
-
-def _export_peak_ratio_plot_csv(
-    subset: pd.DataFrame,
-    date_label_map: dict,
-    target_path: Path,
-) -> None:
-    """Export peak-ratio trend points as a sidecar CSV next to the PNG."""
-    export_df = subset.copy()
-    export_df["date_label"] = export_df["date"].map(date_label_map)
-    export_df.to_csv(target_path.with_suffix(".csv"), index=False)
 
 
 def plot_grouped_spectra(
@@ -702,160 +827,3 @@ def plot_peak_ratio_by_date(
 
     return last_fig
 
-
-def _save_cut_pixel_map_slice(
-    parsed_item: dict,
-    output_path: Path,
-    *,
-    spectrum_key: str = "corrected_spectra_cube",
-    color_scale_wavenumber_cm1: float = 562.0,
-) -> float:
-    """Save a map slice image at the nearest target wavenumber and return the used value."""
-    import matplotlib.pyplot as plt
-
-    slice_data = _compute_cut_pixel_map_slice_data(
-        parsed_item,
-        spectrum_key=spectrum_key,
-        color_scale_wavenumber_cm1=color_scale_wavenumber_cm1,
-    )
-    used_wavenumber = slice_data["used_wavenumber"]
-
-    fig, map_ax = plt.subplots(figsize=(7.2, 6.0))
-    im = map_ax.imshow(slice_data["map_image_display"], origin="upper", cmap="viridis", aspect="equal")
-
-    if slice_data["selected_rows"] is not None:
-        map_ax.scatter(
-            slice_data["selected_rows"],
-            slice_data["selected_cols"],
-            s=45,
-            facecolors="none",
-            edgecolors="white",
-            linewidths=1.2,
-            label="Average pixels",
-        )
-        legend_handles, legend_labels = map_ax.get_legend_handles_labels()
-        map_ax.legend(
-            legend_handles,
-            legend_labels,
-            fontsize=8,
-            loc="upper right",
-            frameon=True,
-        )
-
-    map_ax.set_title(
-        "Baseline corrected"
-        f" | {parsed_item['path'].name}"
-        f" | Color scale wavenumber: {used_wavenumber:.2f} cm^-1"
-    )
-    map_ax.set_xlabel("X index (row)")
-    map_ax.set_ylabel("Y index (column)")
-    fig.colorbar(im, ax=map_ax, fraction=0.046, pad=0.04, label="Intensity")
-    fig.tight_layout()
-
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    fig.savefig(output_path, dpi=200, bbox_inches="tight")
-    plt.close(fig)
-    return used_wavenumber
-
-
-def _save_despiked_baseline_anchor_stack(
-    parsed_item: dict,
-    output_path: Path,
-    *,
-    despiked_key: str = "spectra_cube",
-    baseline_key: str = "baseline_cube",
-    anchor_mask_key: str = "noiseaware_anchor_mask_cube",
-) -> dict[str, int | float | str]:
-    """Save one map-level stack plot with despiked spectra, baseline, and anchors."""
-    import matplotlib.pyplot as plt
-
-    stack_data = _compute_despiked_baseline_anchor_stack_data(
-        parsed_item,
-        despiked_key=despiked_key,
-        baseline_key=baseline_key,
-        anchor_mask_key=anchor_mask_key,
-        stack_scale=1.35,
-        stack_extra_gap=0.1,
-    )
-    if stack_data["status"] != "ok":
-        return {
-            "status": stack_data["status"],
-            "pixels_plotted": 0,
-            "anchors_plotted": 0,
-            "offset_step": np.nan,
-        }
-
-    retained_indices = stack_data["retained_indices"]
-    # Scale figure height with retained pixel count so dense maps remain readable.
-    retained_count = int(retained_indices.shape[0])
-    fig_height = max(8.0, min(70.0, 2.8 + retained_count * 0.3))
-    fig, ax = plt.subplots(figsize=(14, fig_height))
-
-    for trace in stack_data["pixel_traces"]:
-        stack_index = trace["stack_index"]
-        wavenumber = trace["wavenumber"]
-        despiked = trace["despiked"]
-        baseline = trace["baseline"]
-        finite_signal_mask = trace["finite_signal_mask"]
-        finite_baseline_mask = trace["finite_baseline_mask"]
-        offset = trace["offset"]
-
-        ax.plot(
-            wavenumber[finite_signal_mask],
-            despiked[finite_signal_mask] + offset,
-            color="tab:blue",
-            linewidth=0.7,
-            alpha=0.35,
-            label="Despiked spectra" if stack_index == 0 else None,
-        )
-        ax.plot(
-            wavenumber[finite_baseline_mask],
-            baseline[finite_baseline_mask] + offset,
-            color="tab:red",
-            linewidth=0.7,
-            linestyle=":",
-            alpha=0.35,
-            label="Baseline" if stack_index == 0 else None,
-        )
-
-        if trace["anchor_x"].size:
-            ax.scatter(
-                trace["anchor_x"],
-                trace["anchor_y"],
-                s=8,
-                facecolors="none",
-                edgecolors="tab:green",
-                linewidths=0.5,
-                alpha=0.6,
-                label="Noiseaware anchors" if stack_index == 0 else None,
-            )
-
-    file_name = parsed_item["path"].name
-    ax.set_title(
-        f"{file_name} | retained pixels={retained_count}"
-    )
-    ax.set_xlabel("Wavenumber (cm^-1)")
-    ax.set_ylabel("Intensity + stack offset")
-    y_min = stack_data["y_min"]
-    y_max = stack_data["y_max"]
-    if np.isfinite(y_min) and np.isfinite(y_max):
-        y_span = max(y_max - y_min, 1e-12)
-        pad = 0.02 * y_span
-        ax.set_ylim(y_min - pad, y_max + pad)
-    ax.margins(x=0.01, y=0.0)
-    ax.grid(alpha=0.2)
-    handles, labels = ax.get_legend_handles_labels()
-    if handles:
-        ax.legend(loc="upper right", frameon=True, fontsize=9)
-
-    fig.tight_layout()
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    fig.savefig(output_path, dpi=200, bbox_inches="tight")
-    plt.close(fig)
-
-    return {
-        "status": "ok",
-        "pixels_plotted": retained_count,
-        "anchors_plotted": int(stack_data["total_anchors"]),
-        "offset_step": float(stack_data["offset_step"]),
-    }

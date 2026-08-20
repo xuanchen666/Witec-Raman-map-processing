@@ -1,14 +1,16 @@
-"""
-Raman Area Scan Parser Module
+"""File parsing and filename-derived metadata (group/subgroup/date/sample name).
 
-This module provides functions to parse Raman .txt export files 
-into a tidy table with one row per single spectrum, and 3D data cubes.
+Merges the former raman_parser.py (file reading) with the metadata-extraction
+helpers previously duplicated across raman_processing_utils.py and
+raman_map_analysis.py, since both operate on raw file identity with zero
+plotting dependency.
 """
 
 from __future__ import annotations
 
 import csv
 import re
+from collections import Counter
 from io import StringIO
 from pathlib import Path
 from typing import TypedDict
@@ -16,7 +18,7 @@ from typing import TypedDict
 import numpy as np
 import pandas as pd
 
-# Regular expression to extract X and Y coordinates from column labels like "Spectrum (1/2)"
+
 POSITION_RE = re.compile(r"\((\d+)/(\d+)\)$")
 
 
@@ -158,3 +160,155 @@ def single_spectrum_frame(parsed: ParsedRamanExport, x_index: int, y_index: int)
             "intensity": parsed["spectra_cube"][x_index, y_index, :],
         }
     )
+
+
+_DATE_PATTERN = re.compile(r"(\d{8})")
+
+
+_LASER_PATTERN = re.compile(r"\d+(?:\.\d+)?(?:mw|w)", flags=re.IGNORECASE)
+
+
+def _normalize_substrate_token(token: str) -> str | None:
+    """Map naming tokens to canonical group labels."""
+    lowered = token.strip().lower()
+    if lowered == "au":
+        return "Au"
+    if lowered == "ro":
+        return "RO"
+    if lowered == "hbn":
+        return "hBN"
+    return None
+
+
+def _is_numeric_suffix(token: str) -> bool:
+    """Return true for integer suffixes used in names like hBN_1."""
+    return bool(re.fullmatch(r"\d+", token.strip()))
+
+
+def _is_laser_power_token(token: str) -> bool:
+    """Return true for laser power tokens like 10mW or 0.5W."""
+    return bool(_LASER_PATTERN.fullmatch(token.strip()))
+
+
+def _split_stem_tokens(file_name: str) -> list[str]:
+    """Split file stem into underscore-separated naming tokens."""
+    stem = Path(file_name).stem
+    return [token for token in stem.split("_") if token]
+
+
+def _strip_trailing_metadata_tokens(tokens: list[str]) -> list[str]:
+    """Remove trailing date and laser-power tokens from a filename token list."""
+    stripped_tokens = list(tokens)
+
+    if stripped_tokens and re.fullmatch(r"\d{8}", stripped_tokens[-1]):
+        stripped_tokens.pop()
+
+    if stripped_tokens and _is_laser_power_token(stripped_tokens[-1]):
+        stripped_tokens.pop()
+
+    return stripped_tokens
+
+
+def extract_group(file_name: str) -> str:
+    """Classify a file into Au, RO, hBN, or Other from naming tokens."""
+    tokens = _split_stem_tokens(file_name)
+    for token in tokens:
+        normalized = _normalize_substrate_token(token)
+        if normalized is not None:
+            return normalized
+    return "Other"
+
+
+def extract_subgroup(file_name: str) -> str:
+    """Return a comparison subgroup label, preserving hBN suffixes when present."""
+    group = extract_group(file_name)
+    if group != "hBN":
+        return group
+
+    tokens = _strip_trailing_metadata_tokens(_split_stem_tokens(file_name))
+    for index, token in enumerate(tokens):
+        normalized = _normalize_substrate_token(token)
+        if normalized != "hBN":
+            continue
+
+        subgroup_suffix_tokens = tokens[index + 1 :]
+        if not subgroup_suffix_tokens:
+            return "hBN"
+
+        return "hBN_" + "_".join(subgroup_suffix_tokens)
+
+    return "hBN"
+
+
+def extract_date(file_name: str) -> pd.Timestamp:
+    """Extract YYYYMMDD date token from a file name."""
+    match = _DATE_PATTERN.search(file_name)
+    if match:
+        return pd.to_datetime(match.group(1), format="%Y%m%d", errors="coerce")
+    return pd.NaT
+
+
+def _derive_sample_candidate(file_name: str, group_name: str | None = None) -> str:
+    """Extract sample name from pattern: sample_substrate(_x)?_laser?(optional)_date."""
+    tokens = _split_stem_tokens(file_name)
+    if not tokens:
+        return ""
+
+    tokens = _strip_trailing_metadata_tokens(tokens)
+    if not tokens:
+        return ""
+
+    # Find substrate token location so any hBN suffix stays out of the sample name.
+    substrate_index: int | None = None
+    for index, token in enumerate(tokens):
+        normalized = _normalize_substrate_token(token)
+        if normalized is None:
+            continue
+
+        substrate_index = index
+        break
+
+    if substrate_index is None:
+        stem = "_".join(tokens)
+        return stem.strip("_-")
+
+    sample_tokens = tokens[:substrate_index]
+    if sample_tokens:
+        return "_".join(sample_tokens).strip("_-")
+
+    # Fallback if the first token itself is the substrate marker.
+    return "sample"
+
+
+def infer_sample_name(
+    avg_map_spectra: pd.DataFrame,
+    fallback: str = "sample",
+) -> str:
+    """Infer a representative sample name from averaged map metadata."""
+    if avg_map_spectra.empty or "file" not in avg_map_spectra.columns:
+        return fallback
+
+    candidates: list[str] = []
+    for _, row in avg_map_spectra.iterrows():
+        file_name = str(row.get("file", ""))
+        group_name = str(row.get("group", "")) if "group" in avg_map_spectra.columns else None
+        candidate = _derive_sample_candidate(file_name, group_name=group_name)
+        if candidate:
+            candidates.append(candidate)
+
+    if not candidates:
+        return fallback
+
+    return Counter(candidates).most_common(1)[0][0]
+
+
+def _extract_sample_code(sample_name: str | None) -> str:
+    """Extract compact sample code token (e.g., S6) from sample name text."""
+    if sample_name is None:
+        return ""
+
+    match = re.search(r"\bS\d+\b", str(sample_name), flags=re.IGNORECASE)
+    if not match:
+        return ""
+    return match.group(0).upper()
+
