@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import TypedDict
 
@@ -14,6 +15,7 @@ from .config import (
     BORDER_FILTER_ENABLED,
     MAX_INTENSITY_APPLY_TO_GROUPS,
     MAX_PIXEL_INTENSITY,
+    SPECIFIC_PIXEL_EXCLUSIONS,
     SPECTRUM_GATE_APPLY_TO_GROUPS,
     SPECTRUM_GATE_ENABLED,
     SPECTRUM_GATE_MIN_MEAN_INTENSITY,
@@ -27,6 +29,7 @@ from .core.filters import (
     filter_spectra_by_max_intensity,
     filter_spectra_by_wavenumber_region_mean,
     filter_low_wavenumber_region,
+    filter_specific_pixels_by_map,
 )
 from .core.analysis import summarize_parsed_collection
 
@@ -67,6 +70,7 @@ class Stage2PixelFilterArtifacts(TypedDict):
     border_filter_report: pd.DataFrame
     spectrum_gate_report: pd.DataFrame
     max_intensity_gate_report: pd.DataFrame
+    specific_pixel_exclusion_report: pd.DataFrame
 
 
 class Stage3LowWavenumberArtifacts(TypedDict):
@@ -276,6 +280,7 @@ def run_stage2_pixel_filter(
     spectrum_gate_apply_to_groups: tuple[str, ...] | None = None,
     max_pixel_intensity: float | None = None,
     max_intensity_apply_to_groups: tuple[str, ...] | None = None,
+    specific_pixel_exclusions: Mapping[str, Sequence[tuple[int, int]]] | None = None,
 ) -> Stage2PixelFilterArtifacts:
     """Run all optional pixel-cut filters in sequence for Stage 2."""
     if border_enabled is None:
@@ -304,6 +309,8 @@ def run_stage2_pixel_filter(
         )
     if max_intensity_apply_to_groups is None:
         max_intensity_apply_to_groups = tuple(MAX_INTENSITY_APPLY_TO_GROUPS)
+    if specific_pixel_exclusions is None:
+        specific_pixel_exclusions = dict(SPECIFIC_PIXEL_EXCLUSIONS)
 
     stage2_border = _run_stage2_border_filter(
         parsed_files=parsed_files,
@@ -335,6 +342,19 @@ def run_stage2_pixel_filter(
             threshold=None,
         )
 
+    if specific_pixel_exclusions:
+        pixel_filtered, specific_pixel_exclusion_report = filter_specific_pixels_by_map(
+            parsed_collection=pixel_filtered,
+            pixel_exclusions_by_map=specific_pixel_exclusions,
+        )
+    else:
+        specific_pixel_exclusion_report = pd.DataFrame(
+            {
+                "file": [item["path"].name for item in pixel_filtered],
+                "pixels_excluded": 0,
+            }
+        )
+
     pixel_filtered_all_tidy = (
         pd.concat([item["tidy"] for item in pixel_filtered], ignore_index=True)
         if pixel_filtered
@@ -355,6 +375,7 @@ def run_stage2_pixel_filter(
         "border_filter_report": stage2_border["border_filter_report"],
         "spectrum_gate_report": stage2_spectrum_gate["spectra_gate_report"],
         "max_intensity_gate_report": max_intensity_gate_report,
+        "specific_pixel_exclusion_report": specific_pixel_exclusion_report,
     }
 
 

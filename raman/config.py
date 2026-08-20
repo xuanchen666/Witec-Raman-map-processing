@@ -30,7 +30,8 @@ class Paths:
 
 # -----------------------------------------------------------------------------
 # 2) Stage 2: pixel-level filtering
-# Order: border filter -> spectrum gate -> optional max-intensity cutoff
+# Order: border filter -> spectrum gate -> optional max-intensity cutoff ->
+# specific pixel exclusion by map
 # -----------------------------------------------------------------------------
 class Stage2PixelFilter:
     """All pixel-cut controls grouped in the exact Stage 2 execution order."""
@@ -55,6 +56,13 @@ class Stage2PixelFilter:
     # 2.3) Optional max-intensity cutoff
     MAX_PIXEL_INTENSITY = None  # If None, this cutoff is skipped.
     MAX_INTENSITY_APPLY_TO_GROUPS = ("hBN",)
+
+    # 2.4) Specific pixel exclusion by map
+    # Keys can be an exact filename, filename stem, or any distinguishing
+    # substring of the filename; values are lists of (x_index, y_index) pixels
+    # to drop for maps matching that key.
+    # Example: {"S6_17AGNR_High cov_RO_0003": [(0, 0), (3, 4)]}
+    SPECIFIC_PIXEL_EXCLUSIONS: dict["str", list[tuple[int, int]]] = {"S6_hBN_1_10mW_20260505.txt": [(1, 3), (2, 3)]}
 
 
 # -----------------------------------------------------------------------------
@@ -290,6 +298,7 @@ DESPIKE_THRESHOLD = Stage4Despike.DESPIKE_THRESHOLD
 TOP_N_AGGRESSIVE_DESPIKE = Stage4Despike.TOP_N_AGGRESSIVE_DESPIKE
 MAX_PIXEL_INTENSITY = Stage2PixelFilter.MAX_PIXEL_INTENSITY
 MAX_INTENSITY_APPLY_TO_GROUPS = Stage2PixelFilter.MAX_INTENSITY_APPLY_TO_GROUPS
+SPECIFIC_PIXEL_EXCLUSIONS = Stage2PixelFilter.SPECIFIC_PIXEL_EXCLUSIONS
 
 BASELINE_METHOD = Stage5Baseline.METHOD
 MOR_HALF_WINDOW = Stage5Baseline.MOR_HALF_WINDOW

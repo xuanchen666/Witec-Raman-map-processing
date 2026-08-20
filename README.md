@@ -33,7 +33,7 @@ tests/                        # pytest suite for the pure-compute helpers (headl
 ## Pipeline stages
 
 1. **Parse** – read every `.txt` export in `raman.config.DATA_DIR` into a tidy table + 3D spectra cube.
-2. **Pixel filter** – border-pixel trim, mean-intensity spectrum gate, and max-intensity cutoff (each independently scoped to a group/subgroup like `hBN` or `hBN_1`).
+2. **Pixel filter** – border-pixel trim, mean-intensity spectrum gate, max-intensity cutoff (each independently scoped to a group/subgroup like `hBN` or `hBN_1`), and a final specific-pixel exclusion step for dropping individual `(x_index, y_index)` pixels on named maps.
 3. **Low-wavenumber filter** – trim the spectral axis below a configured cutoff.
 4. **Despike** – suppress cosmic-ray spikes via `rampy.despiking`.
 5. **Baseline correction** – `mor`, `airpls`, `poly`, `rolling_ball`, or `noiseaware`.
@@ -43,6 +43,24 @@ An interactive explorer (`raman.plotting.explorer.launch_raman_map_explorer`) le
 step through every stage/file/pixel; its state can be saved with
 `raman.export.snapshot.save_explorer_snapshot` and reopened later from
 `Raman_explorer_reopen.ipynb` without rerunning Stages 1-6.
+
+### Excluding specific pixels
+
+To drop individual noisy/damaged pixels from specific maps (rather than filtering by
+threshold or scope), set `Stage2PixelFilter.SPECIFIC_PIXEL_EXCLUSIONS` in
+`raman/config.py`:
+
+```python
+SPECIFIC_PIXEL_EXCLUSIONS: dict[str, list[tuple[int, int]]] = {
+    "S6_hBN_1_10mW_20260505.txt": [(1, 3), (2, 3)],
+}
+```
+
+Each key can be an exact filename, filename stem, or any distinguishing substring of
+the filename; the matching map has the listed `(x_index, y_index)` pixels dropped
+(set to NaN) as the last Stage 2 pixel-filter substep, after the border filter,
+spectrum gate, and max-intensity cutoff. The Stage 2 notebook cell reports the result
+in `specific_pixel_exclusion_report`.
 
 ## Getting started
 

@@ -380,6 +380,98 @@ def filter_spectra_by_max_intensity(
     return filtered_collection, report_df
 
 
+def _map_matches_pixel_exclusion_key(map_path_name: str, key: str) -> bool:
+    """Return whether a config key identifies the given map filename."""
+    key = key.strip()
+    map_stem = map_path_name.rsplit(".", 1)[0]
+    return key == map_path_name or key == map_stem or key in map_path_name
+
+
+def filter_specific_pixels_by_map(
+    parsed_collection: ParsedCollection,
+    pixel_exclusions_by_map: Mapping[str, Sequence[tuple[int, int]]],
+    spectrum_key: str = "spectra_cube",
+) -> tuple[ParsedCollectionMutable, pd.DataFrame]:
+    """Drop specific (x_index, y_index) pixels for maps matched by filename.
+
+    ``pixel_exclusions_by_map`` keys can be an exact filename, filename stem,
+    or any substring found in the filename (e.g. a distinguishing fragment of
+    the map's name), so different maps can each get their own pixel list.
+    """
+    filtered_collection: ParsedCollectionMutable = []
+    report_records: list[dict[str, Any]] = []
+
+    for parsed in parsed_collection:
+        map_name = parsed["path"].name
+        map_group = extract_group(map_name)
+        map_subgroup = extract_subgroup(map_name)
+
+        excluded_pixels: list[tuple[int, int]] = []
+        for key, pixels in pixel_exclusions_by_map.items():
+            if _map_matches_pixel_exclusion_key(map_name, str(key)):
+                excluded_pixels.extend((int(x), int(y)) for x, y in pixels)
+
+        cube = np.asarray(parsed[spectrum_key], dtype=float)
+        keep_mask = _resolve_existing_keep_mask(parsed, spectrum_key=spectrum_key).copy()
+
+        if excluded_pixels:
+            rows, cols = cube.shape[:2]
+            for x_index, y_index in excluded_pixels:
+                if not (0 <= x_index < rows and 0 <= y_index < cols):
+                    raise ValueError(
+                        f"Pixel ({x_index}, {y_index}) out of bounds for {map_name} "
+                        f"with shape ({rows}, {cols})"
+                    )
+                keep_mask[x_index, y_index] = False
+
+        filtered_cube = cube.copy()
+        filtered_cube[~keep_mask, :] = np.nan
+
+        tidy = parsed["tidy"]
+        keep_coords = pd.DataFrame(np.argwhere(keep_mask), columns=["x_index", "y_index"])
+        if keep_coords.empty:
+            tidy_filtered = tidy.iloc[0:0].copy()
+        else:
+            tidy_filtered = (
+                tidy.merge(keep_coords, on=["x_index", "y_index"], how="inner")
+                .sort_values(["spectrum_index", "wavenumber_cm1"])
+                .reset_index(drop=True)
+            )
+
+        filtered_collection.append(
+            {
+                **parsed,
+                spectrum_key: filtered_cube,
+                "tidy": tidy_filtered,
+                "spectrum_keep_mask": keep_mask,
+                "specific_pixel_filter_config": {
+                    "map_group": map_group,
+                    "map_subgroup": map_subgroup,
+                    "excluded_pixels": sorted(set(excluded_pixels)),
+                },
+            }
+        )
+
+        total_spectra = int(keep_mask.size)
+        kept_spectra = int(np.count_nonzero(keep_mask))
+        dropped_spectra = total_spectra - kept_spectra
+        report_records.append(
+            {
+                "file": map_name,
+                "group": map_group,
+                "subgroup": map_subgroup,
+                "pixels_excluded": len(set(excluded_pixels)),
+                "spectra_total": total_spectra,
+                "spectra_kept": kept_spectra,
+                "spectra_dropped": dropped_spectra,
+                "drop_fraction": (dropped_spectra / total_spectra) if total_spectra else np.nan,
+            }
+        )
+
+    report_df = pd.DataFrame.from_records(report_records)
+    return filtered_collection, report_df
+
+
 def despike_parsed_collection(
     parsed_collection: ParsedCollection,
     neigh: int = 4,
