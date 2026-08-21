@@ -15,6 +15,21 @@ def test_importing_modules_does_not_pull_in_matplotlib():
     assert "matplotlib" not in sys.modules
 
 
+def test_move_selected_pixel_uses_visual_arrow_key_directions():
+    assert rpe._move_selected_pixel(2, 3, "left", max_row_index=4, max_col_index=5) == (1, 3)
+    assert rpe._move_selected_pixel(2, 3, "right", max_row_index=4, max_col_index=5) == (3, 3)
+    assert rpe._move_selected_pixel(2, 3, "up", max_row_index=4, max_col_index=5) == (2, 2)
+    assert rpe._move_selected_pixel(2, 3, "down", max_row_index=4, max_col_index=5) == (2, 4)
+
+
+def test_move_selected_pixel_clamps_to_map_bounds_and_ignores_other_keys():
+    assert rpe._move_selected_pixel(0, 0, "left", max_row_index=4, max_col_index=5) == (0, 0)
+    assert rpe._move_selected_pixel(0, 0, "up", max_row_index=4, max_col_index=5) == (0, 0)
+    assert rpe._move_selected_pixel(4, 5, "right", max_row_index=4, max_col_index=5) == (4, 5)
+    assert rpe._move_selected_pixel(4, 5, "down", max_row_index=4, max_col_index=5) == (4, 5)
+    assert rpe._move_selected_pixel(2, 3, "a", max_row_index=4, max_col_index=5) == (2, 3)
+
+
 def test_compute_pixel_spectrum_comparison_data_basic():
     wavenumber = np.linspace(200.0, 800.0, 10)
     corrected = np.arange(10, dtype=float)

@@ -15,6 +15,27 @@ StageCollections = Mapping[str, Sequence[ParsedMap]]
 StageSpectrumKeys = Mapping[str, str]
 
 
+def _move_selected_pixel(
+    row_index: int,
+    col_index: int,
+    key: str | None,
+    *,
+    max_row_index: int,
+    max_col_index: int,
+) -> tuple[int, int]:
+    """Return the in-bounds pixel selected by an arrow-key press."""
+    row_delta, col_delta = {
+        "left": (-1, 0),
+        "right": (1, 0),
+        "up": (0, -1),
+        "down": (0, 1),
+    }.get(key, (0, 0))
+    return (
+        int(np.clip(row_index + row_delta, 0, max_row_index)),
+        int(np.clip(col_index + col_delta, 0, max_col_index)),
+    )
+
+
 def _compute_pixel_spectrum_comparison_data(
     parsed_item: ParsedMap,
     row_index: int,
@@ -374,7 +395,8 @@ def launch_raman_map_explorer(
     )
     info_html = widgets.HTML(
         value=(
-            "Click directly on the map to select a pixel, or use the X/Y sliders for exact selection. "
+            "Click directly on the map to select a pixel, then use arrow keys to move between pixels, "
+            "or use the X/Y sliders for exact selection. "
             "Use the &lt; pt / pt &gt; buttons (or arrow keys after clicking the slider) "
             "to step through every wavenumber point one at a time. "
             "Use the View range slider to zoom the spectrum plot to a wavenumber window; "
@@ -391,7 +413,7 @@ def launch_raman_map_explorer(
         )
     )
     output = widgets.Output()
-    active_canvas_holder: dict[str, Any] = {"figure": None}
+    active_canvas_holder: dict[str, Any] = {"figure": None, "key_press_cid": None}
 
     def _step_point(delta: int) -> None:
         options = map_index_slider.options
@@ -407,6 +429,17 @@ def launch_raman_map_explorer(
         view_range_slider.value = [view_range_slider.min, view_range_slider.max]
 
     reset_view_range_button.on_click(_reset_view_range)
+
+    def _on_key_press(event) -> None:
+        row_value, col_value = _move_selected_pixel(
+            row_slider.value,
+            col_slider.value,
+            event.key,
+            max_row_index=row_slider.max,
+            max_col_index=col_slider.max,
+        )
+        row_slider.value = row_value
+        col_slider.value = col_value
 
     def _current_item() -> tuple[str, ParsedMap, str]:
         stage_name = cast(str, stage_dropdown.value)
@@ -535,6 +568,7 @@ def launch_raman_map_explorer(
                     fig, axes = plt.subplots(1, 2, figsize=(14, 5.4))
                 map_ax, spectrum_ax = axes
                 active_canvas_holder["figure"] = fig
+                active_canvas_holder["key_press_cid"] = fig.canvas.mpl_connect("key_press_event", _on_key_press)
             elif supports_map_click:
                 fig = active_canvas_holder["figure"]
                 fig.clear()
