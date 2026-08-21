@@ -23,8 +23,8 @@ from .config import (
 )
 from .core.metadata import ParsedRamanExport, parse_raman_export
 from .core.baseline import apply_baseline_correction
+from .core.despike import despike_parsed_collection
 from .core.filters import (
-    despike_parsed_collection,
     filter_spectra_by_border_pixels,
     filter_spectra_by_max_intensity,
     filter_spectra_by_wavenumber_region_mean,
@@ -410,12 +410,14 @@ def run_stage4_despike(
     parsed_files: list[dict],
     neigh: int,
     threshold: int,
+    exclude_regions_cm1: Sequence[tuple[float, float]] | None = None,
 ) -> Stage4DespikeArtifacts:
     """Run Stage 4 despike without applying an extra pixel cutoff."""
     despiked_files = despike_parsed_collection(
         parsed_files,
         neigh=neigh,
         threshold=threshold,
+        exclude_regions_cm1=exclude_regions_cm1,
     )
     max_intensity_gate_report = _summarize_pixel_keep_status(
         parsed_files=despiked_files,

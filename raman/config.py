@@ -83,6 +83,8 @@ class Stage4Despike:
     DESPIKE_NEIGH = 6  # Number of neighboring points used for local comparison.
     DESPIKE_THRESHOLD = 10  # Spike detection sensitivity threshold.
     TOP_N_AGGRESSIVE_DESPIKE = 0  # Number of most-changed spectra shown in QC.
+    # Wavenumber windows (cm^-1) left untouched by despiking, e.g. [(1580, 1600)].
+    DESPIKE_EXCLUDE_REGIONS_CM1: list[tuple[float, float]] | None = [(1300,1400)]
 
 
 # -----------------------------------------------------------------------------
@@ -241,6 +243,7 @@ class Stage3Despike:
     DESPIKE_NEIGH = Stage4Despike.DESPIKE_NEIGH
     DESPIKE_THRESHOLD = Stage4Despike.DESPIKE_THRESHOLD
     TOP_N_AGGRESSIVE_DESPIKE = Stage4Despike.TOP_N_AGGRESSIVE_DESPIKE
+    DESPIKE_EXCLUDE_REGIONS_CM1 = Stage4Despike.DESPIKE_EXCLUDE_REGIONS_CM1
     MAX_PIXEL_INTENSITY = Stage2PixelFilter.MAX_PIXEL_INTENSITY
     MAX_INTENSITY_APPLY_TO_GROUPS = Stage2PixelFilter.MAX_INTENSITY_APPLY_TO_GROUPS
 
@@ -296,6 +299,7 @@ BORDER_FILTER_APPLY_TO_GROUPS = Stage2PixelFilter.BORDER_APPLY_TO_GROUPS
 DESPIKE_NEIGH = Stage4Despike.DESPIKE_NEIGH
 DESPIKE_THRESHOLD = Stage4Despike.DESPIKE_THRESHOLD
 TOP_N_AGGRESSIVE_DESPIKE = Stage4Despike.TOP_N_AGGRESSIVE_DESPIKE
+DESPIKE_EXCLUDE_REGIONS_CM1 = Stage4Despike.DESPIKE_EXCLUDE_REGIONS_CM1
 MAX_PIXEL_INTENSITY = Stage2PixelFilter.MAX_PIXEL_INTENSITY
 MAX_INTENSITY_APPLY_TO_GROUPS = Stage2PixelFilter.MAX_INTENSITY_APPLY_TO_GROUPS
 SPECIFIC_PIXEL_EXCLUSIONS = Stage2PixelFilter.SPECIFIC_PIXEL_EXCLUSIONS
