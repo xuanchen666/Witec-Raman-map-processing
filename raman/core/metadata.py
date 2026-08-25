@@ -220,24 +220,24 @@ def extract_group(file_name: str) -> str:
 
 
 def extract_subgroup(file_name: str) -> str:
-    """Return a comparison subgroup label, preserving hBN suffixes when present."""
+    """Return a comparison subgroup label, preserving group suffixes when present."""
     group = extract_group(file_name)
-    if group != "hBN":
+    if group == "Other":
         return group
 
     tokens = _strip_trailing_metadata_tokens(_split_stem_tokens(file_name))
     for index, token in enumerate(tokens):
         normalized = _normalize_substrate_token(token)
-        if normalized != "hBN":
+        if normalized != group:
             continue
 
         subgroup_suffix_tokens = tokens[index + 1 :]
         if not subgroup_suffix_tokens:
-            return "hBN"
+            return group
 
-        return "hBN_" + "_".join(subgroup_suffix_tokens)
+        return group + "_" + "_".join(subgroup_suffix_tokens)
 
-    return "hBN"
+    return group
 
 
 def extract_date(file_name: str) -> pd.Timestamp:

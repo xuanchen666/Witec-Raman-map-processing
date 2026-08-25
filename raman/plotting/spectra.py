@@ -490,6 +490,32 @@ def plot_normalized_overlap_by_group(
     return exported_paths
 
 
+def _split_groups_by_subgroup(
+    avg_map_spectra: pd.DataFrame,
+    groups: Iterable[str],
+) -> tuple[list[str], dict[str, list[str]]]:
+    """Split requested groups into flat parent-level groups and multi-subgroup groups.
+
+    A group is only treated as "having subgroups" when it resolves to more than
+    one distinct subgroup label; such groups are dropped from the parent-level
+    panel list and instead get a dedicated per-subgroup breakdown.
+    """
+    parent_groups: list[str] = []
+    group_subgroups: dict[str, list[str]] = {}
+
+    for group_name in groups:
+        group_subset = avg_map_spectra[
+            (avg_map_spectra["group"] == group_name) & avg_map_spectra["subgroup"].notna()
+        ]
+        subgroups = sorted(str(value) for value in pd.unique(group_subset["subgroup"]))
+        if len(subgroups) > 1:
+            group_subgroups[group_name] = subgroups
+        else:
+            parent_groups.append(group_name)
+
+    return parent_groups, group_subgroups
+
+
 def plot_average_and_normalized_map_spectra(
     parsed_collection: list[dict],
     spectrum_key: str = "corrected_spectra_cube",
@@ -506,15 +532,20 @@ def plot_average_and_normalized_map_spectra(
     peak_ratio_wavenumber_ranges: object = PEAK_RATIO_WAVENUMBER_RANGES,
     output_dir: Path | None = None,
     sample_name: str | None = None,
-    pdf: "PdfPages | None" = None,
+    avg_stack_pdf: "PdfPages | None" = None,
+    norm_stack_overlap_pdf: "PdfPages | None" = None,
+    peak_ratio_pdf: "PdfPages | None" = None,
     show: bool = True,
 ) -> pd.DataFrame:
     """Build per-map average spectra, then plot raw and normalized versions.
 
     Peak-ratio windows are configured independently from plot/export windows.
-    When `pdf` is provided, every figure this function draws is appended to that
-    shared multi-page PDF instead of being saved as an individual PNG. Set
-    `show=False` to skip inline display of each figure in the notebook.
+    Any requested group that resolves to more than one subgroup is plotted only
+    at the subgroup level: its parent-group panel and parent-group peak ratio
+    are both skipped so the export does not contain a redundant combined view.
+    When a pdf parameter is provided, every figure of that kind is appended to
+    that shared multi-page PDF instead of being saved as an individual PNG.
+    Set `show=False` to skip inline display of each figure in the notebook.
     """
     avg_map_spectra = build_average_map_spectra(
         parsed_collection=parsed_collection,
@@ -560,10 +591,7 @@ def plot_average_and_normalized_map_spectra(
         )
         normalized_y_label = "Relative intensity (I / I_1590-window-max)"
 
-    hbn_subgroup_spectra = avg_map_spectra[
-        (avg_map_spectra["group"] == "hBN") & avg_map_spectra["subgroup"].notna()
-    ].copy()
-    hbn_subgroups = [str(group_name) for group_name in pd.unique(hbn_subgroup_spectra["subgroup"])]
+    parent_groups, group_subgroups = _split_groups_by_subgroup(avg_map_spectra, groups)
 
     for range_config in resolved_ranges:
         range_min = range_config["wavenumber_min"]
@@ -613,13 +641,13 @@ def plot_average_and_normalized_map_spectra(
             title_suffix=raw_title_suffix,
             y_label="Intensity (a.u.)",
             group_col="group",
-            panel_order=groups,
+            panel_order=parent_groups,
             stack_scale=range_raw_stack_scale,
             stack_extra_gap=range_raw_stack_extra_gap,
             wavenumber_min=range_min,
             wavenumber_max=range_max,
             output_path=current_raw_output_path,
-            pdf=pdf,
+            pdf=avg_stack_pdf,
             show=show,
         )
 
@@ -630,110 +658,142 @@ def plot_average_and_normalized_map_spectra(
             title_suffix=normalized_title_suffix,
             y_label=normalized_y_label,
             group_col="group",
-            panel_order=groups,
+            panel_order=parent_groups,
             stack_scale=range_norm_stack_scale,
             stack_extra_gap=range_norm_stack_extra_gap,
             wavenumber_min=range_min,
             wavenumber_max=range_max,
             output_path=current_norm_output_path,
-            pdf=pdf,
+            pdf=norm_stack_overlap_pdf,
             show=show,
         )
 
         plot_normalized_overlap_by_group(
             avg_map_spectra=avg_map_spectra,
-            groups=groups,
+            groups=parent_groups,
             wavenumber_min=range_min,
             wavenumber_max=range_max,
             sample_code=sample_code,
             output_dir=_prepare_export_subdir(output_dir, "plots", "norm_overlap", "groups") if output_dir is not None else None,
             group_col="group",
             output_name_suffix=range_suffix,
-            pdf=pdf,
+            pdf=norm_stack_overlap_pdf,
             show=show,
         )
 
-        if len(hbn_subgroups) > 1:
+        for group_name, subgroup_list in group_subgroups.items():
+            group_subset = avg_map_spectra[avg_map_spectra["group"] == group_name]
+            folder_scope = f"{_sanitize_export_stem(str(group_name)) or 'group'}_subgroups"
+
             subgroup_raw_output_path = None
             subgroup_norm_output_path = None
             if output_dir is not None:
                 subgroup_raw_output_path = _build_group_plot_path(
                     output_dir,
                     "avg_stack",
-                    "hbn_subgroups",
+                    folder_scope,
                     stem_suffix=range_suffix,
                 )
                 subgroup_norm_output_path = _build_group_plot_path(
                     output_dir,
                     "norm_stack",
-                    "hbn_subgroups",
+                    folder_scope,
                     stem_suffix=range_suffix,
                 )
 
             plot_grouped_spectra(
-                hbn_subgroup_spectra,
+                group_subset,
                 value_col="mean_spectrum",
                 title_prefix=sample_code,
                 title_suffix=raw_title_suffix,
                 y_label="Intensity (a.u.)",
                 group_col="subgroup",
-                panel_order=hbn_subgroups,
+                panel_order=subgroup_list,
                 stack_scale=range_raw_stack_scale,
                 stack_extra_gap=range_raw_stack_extra_gap,
                 wavenumber_min=range_min,
                 wavenumber_max=range_max,
                 output_path=subgroup_raw_output_path,
-                pdf=pdf,
+                pdf=avg_stack_pdf,
                 show=show,
             )
 
             plot_grouped_spectra(
-                hbn_subgroup_spectra,
+                group_subset,
                 value_col="mean_spectrum_norm",
                 title_prefix=sample_code,
                 title_suffix=normalized_title_suffix,
                 y_label=normalized_y_label,
                 group_col="subgroup",
-                panel_order=hbn_subgroups,
+                panel_order=subgroup_list,
                 stack_scale=range_norm_stack_scale,
                 stack_extra_gap=range_norm_stack_extra_gap,
                 wavenumber_min=range_min,
                 wavenumber_max=range_max,
                 output_path=subgroup_norm_output_path,
-                pdf=pdf,
+                pdf=norm_stack_overlap_pdf,
                 show=show,
             )
 
             plot_normalized_overlap_by_group(
-                avg_map_spectra=hbn_subgroup_spectra,
-                groups=hbn_subgroups,
+                avg_map_spectra=group_subset,
+                groups=subgroup_list,
                 wavenumber_min=range_min,
                 wavenumber_max=range_max,
                 sample_code=sample_code,
-                output_dir=_prepare_export_subdir(output_dir, "plots", "norm_overlap", "hbn_subgroups") if output_dir is not None else None,
+                output_dir=_prepare_export_subdir(output_dir, "plots", "norm_overlap", folder_scope) if output_dir is not None else None,
                 group_col="subgroup",
                 output_name_suffix=range_suffix,
-                pdf=pdf,
+                pdf=norm_stack_overlap_pdf,
                 show=show,
             )
 
-    if len(hbn_subgroups) > 1:
-        for peak_ratio_range_config in resolved_peak_ratio_ranges:
-            ratio_min = peak_ratio_range_config["wavenumber_min"]
-            ratio_max = peak_ratio_range_config["wavenumber_max"]
-            ratio_suffix = peak_ratio_range_config["export_stem_suffix"]
+    for peak_ratio_range_config in resolved_peak_ratio_ranges:
+        ratio_min = peak_ratio_range_config["wavenumber_min"]
+        ratio_max = peak_ratio_range_config["wavenumber_max"]
+        ratio_suffix = peak_ratio_range_config["export_stem_suffix"]
+
+        if parent_groups:
+            parent_peak_ratio_output_path = None
+            if output_dir is not None:
+                parent_peak_ratio_output_path = _build_group_plot_path(
+                    output_dir,
+                    "peak_ratio",
+                    "groups",
+                    stem_suffix=ratio_suffix,
+                )
+
+            parent_peak_ratio_df = build_peak_ratio_table(
+                avg_map_spectra=avg_map_spectra[avg_map_spectra["group"].isin(parent_groups)],
+                spectrum_col="mean_spectrum",
+                distance=15,
+                wavenumber_min=ratio_min,
+                wavenumber_max=ratio_max,
+            )
+            plot_peak_ratio_by_date(
+                peak_ratio_df=parent_peak_ratio_df,
+                groups=parent_groups,
+                output_path=parent_peak_ratio_output_path,
+                group_col="group",
+                pdf=peak_ratio_pdf,
+                show=show,
+            )
+
+        for group_name, subgroup_list in group_subgroups.items():
+            folder_scope = f"{_sanitize_export_stem(str(group_name)) or 'group'}_subgroups"
+            group_subset = avg_map_spectra[avg_map_spectra["group"] == group_name]
 
             subgroup_peak_ratio_output_path = None
             if output_dir is not None:
                 subgroup_peak_ratio_output_path = _build_group_plot_path(
                     output_dir,
                     "peak_ratio",
-                    "hbn_subgroups",
+                    folder_scope,
                     stem_suffix=ratio_suffix,
                 )
 
             subgroup_peak_ratio_df = build_peak_ratio_table(
-                avg_map_spectra=hbn_subgroup_spectra,
+                avg_map_spectra=group_subset,
                 spectrum_col="mean_spectrum",
                 distance=15,
                 wavenumber_min=ratio_min,
@@ -741,10 +801,10 @@ def plot_average_and_normalized_map_spectra(
             )
             plot_peak_ratio_by_date(
                 peak_ratio_df=subgroup_peak_ratio_df,
-                groups=hbn_subgroups,
+                groups=subgroup_list,
                 output_path=subgroup_peak_ratio_output_path,
                 group_col="subgroup",
-                pdf=pdf,
+                pdf=peak_ratio_pdf,
                 show=show,
             )
 

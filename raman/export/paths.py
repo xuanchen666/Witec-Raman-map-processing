@@ -19,7 +19,6 @@ _EXPORT_PART_PREFIXES = {
     "cutpixel_map": "05_cutpixel_map",
     "despiked_baseline_anchor_stack": "06_despiked_baseline_anchor_stack",
     "groups": "01_groups",
-    "hbn_subgroups": "02_hbn_subgroups",
 }
 
 
