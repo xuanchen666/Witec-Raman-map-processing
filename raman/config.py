@@ -18,7 +18,7 @@ class Paths:
     """Input data locations and path-level settings."""
 
     DATA_DIR = Path(
-        r"C:\Users\xuli\OneDrive - empa.ch\INT Lab 205 - 17AGNR_Xuanchen_Rafaela_Riya\02_Processed Raman data_ambient stability\S6_17AGNR_High cov_RO"
+        r"C:\Users\xuli\OneDrive - empa.ch\INT Lab 205 - 17AGNR_Xuanchen_Rafaela_Riya\02_Processed Raman data_ambient stability\S2_17AGNR_Low cov_RO"
     )
 
 
@@ -45,7 +45,7 @@ class Stage2PixelFilter:
     # 2.1) Border-pixel filtering
     BORDER_ENABLED = True  # Enable border-pixel filtering before spectrum gating.
     BORDER_WIDTH = 1
-    BORDER_APPLY_TO_GROUPS = ("hBN_1",)
+    BORDER_APPLY_TO_GROUPS = ("hBN_5",)
 
     # 2.2) Spectrum gate by mean intensity in a target window
     SPECTRUM_GATE_ENABLED = False
@@ -62,7 +62,7 @@ class Stage2PixelFilter:
     # substring of the filename; values are lists of (x_index, y_index) pixels
     # to drop for maps matching that key.
     # Example: {"S6_17AGNR_High cov_RO_0003": [(0, 0), (3, 4)]}
-    SPECIFIC_PIXEL_EXCLUSIONS: dict["str", list[tuple[int, int]]] = {"S6_hBN_1_10mW_20260505.txt": [(1, 3), (2, 3)]}
+    SPECIFIC_PIXEL_EXCLUSIONS: dict["str", list[tuple[int, int]]] = {}
 
 
 # -----------------------------------------------------------------------------
@@ -80,11 +80,11 @@ class Stage3LowWavenumberFilter:
 class Stage4Despike:
     """Control despiking strength and aggressive-pixel shortlist size."""
 
-    DESPIKE_NEIGH = 6  # Number of neighboring points used for local comparison.
-    DESPIKE_THRESHOLD = 10  # Spike detection sensitivity threshold.
+    DESPIKE_NEIGH = 10  # Number of neighboring points used for local comparison.
+    DESPIKE_THRESHOLD = 3  # Spike detection sensitivity threshold.
     TOP_N_AGGRESSIVE_DESPIKE = 0  # Number of most-changed spectra shown in QC.
     # Wavenumber windows (cm^-1) left untouched by despiking, e.g. [(1580, 1600)].
-    DESPIKE_EXCLUDE_REGIONS_CM1: list[tuple[float, float]] | None = [(1300,1400)]
+    DESPIKE_EXCLUDE_REGIONS_CM1: list[tuple[float, float]] | None = [(1300, 1380), (1550, 1630)]
 
 
 # -----------------------------------------------------------------------------
@@ -121,21 +121,21 @@ class Stage5Baseline:
         "smooth_half_window": None,  # Optional pre-smoothing window before rolling-ball.
     }
     NOISEAWARE_KWARGS = {
-        "q_low": 15,  # Low-quantile level for initial background candidate.
-        "smooth_win": 50,  # Smoothing window for baseline trend extraction.
+        "q_low": 5,  # Low-quantile level for initial background candidate.
+        "smooth_win": 20,  # Smoothing window for baseline trend extraction.
         "mad_win": 31,  # Window for local MAD noise estimation.
-        "z_keep": 6,  # Keep points within this robust z-score from background.
+        "z_keep": 5,  # Keep points within this robust z-score from background.
         "min_region": 5,  # Minimum contiguous background region length.
-        "prom_k": 7,  # Peak prominence multiplier relative to local noise.
-        "peak_dilate": 3,  # Expand detected peak masks by this many points.
-        "remove_k_sigma": 5,  # Threshold for removing connecting anchors based on robust residuals.
+        "prom_k": 10,  # Peak prominence multiplier relative to local noise.
+        "peak_dilate": 5,  # Expand detected peak masks by this many points.
+        "remove_k_sigma": 10,  # Threshold for removing connecting anchors based on robust residuals.
         "fit_interp": "pchip",  # Interpolation for the anchor-based connecting baseline outside explicit peak regions: "pchip" or "spline".
         "bridge_interp": "linear",  # Interpolation used only inside explicit user-defined peak regions: "linear", "pchip", or "spline".
-        "forced_anchor_wavenumbers": [2000],  # cm^-1 targets; algorithm snaps each value to the nearest available point on the current spectrum grid.
-        "bias_strength": 0.5,  # Pull baseline slightly toward lower envelope.
+        "forced_anchor_wavenumbers": None,  # cm^-1 targets; algorithm snaps each value to the nearest available point on the current spectrum grid.
+        "bias_strength": 0.1,  # Pull baseline slightly toward lower envelope.
     }
     # Regions always treated as peaks by noiseaware methods, in cm^-1.
-    PEAK_REGIONS = [(1350, 1600), (2450, 3300)]  # Force these intervals to stay peak-masked.
+    PEAK_REGIONS = [(1300,1600),(2350,3330)]  # Force these intervals to stay peak-masked.
 
 
 # -----------------------------------------------------------------------------
@@ -144,11 +144,12 @@ class Stage5Baseline:
 class Stage6MapAveragePlot:
     """Plot source selection, axis bounds, stacking, and normalization."""
 
+    # 6.1) Plot source and target groups
     # "spectra_cube" = pre-baseline, "corrected_spectra_cube" = baseline-corrected
     SOURCE_SPECTRUM_KEY = "corrected_spectra_cube"
     MAP_GROUPS = ("Au", "RO", "hBN")
 
-    # Stage 6 export windows in cm^-1.
+    # 6.2) Plot window(s) for map-average spectra export
     # Use one tuple for one output set, for example: (1200, 1700)
     # Use multiple tuples for multiple output sets, for example:
     # ((75, 250), (1200, 1700))
@@ -160,41 +161,37 @@ class Stage6MapAveragePlot:
     #     "norm_stack_scale": {"RO": 0.5, "hBN": 0.5},
     # }
     # Set either bound to None to keep matplotlib automatic behavior on that side.
-    
     PLOT_WAVENUMBER_RANGES = (
-    {
-        "min": 75,
-        "max": 250,
-        "raw_stack_scale": {"RO": 2, "hBN": 2},
-        "raw_stack_extra_gap": {"RO": 0, "hBN": 0},
-        "norm_stack_scale": {"RO": 1.2, "hBN": 1},
-        "norm_stack_extra_gap": {"RO": 0, "hBN": 0},
-    },
-    (1200, 1700),
-)
+        {
+            "min": 75,
+            "max": 250,
+            "raw_stack_scale": {"RO": 2, "hBN": 2},
+            "raw_stack_extra_gap": {"RO": 0, "hBN": 0},
+            "norm_stack_scale": {"RO": 1.2, "hBN": 1},
+            "norm_stack_extra_gap": {"RO": 0, "hBN": 0},
+        },
+        (1200, 1700),
+    )
 
-    # Independent range(s) for peak-ratio calculations.
-    # This is intentionally separate from PLOT_WAVENUMBER_RANGES so peak ratio
-    # does not have to be calculated for every exported plot range.
+    # 6.3) Vertical offset per group for raw and normalized stacked spectra
+    # Offset model for grouped spectra plots:
+    # offset = span * stack_scale + stack_extra_gap
+    RAW_STACK_SCALE = {"Au": 3, "RO": 2, "hBN": 12}
+    RAW_STACK_EXTRA_GAP = {"Au": 0, "RO": 0, "hBN": 0}
+    NORM_STACK_SCALE = {"Au": 2, "RO": 1, "hBN": 1}
+    NORM_STACK_EXTRA_GAP = {"Au": 0, "RO": 0, "hBN": 0}
+
+    # 6.4) Peak-ratio search windows
     # Use one tuple, multiple tuples, or None for full-spectrum peak search.
     PEAK_RATIO_WAVENUMBER_RANGES = (1200, 1700)
 
-    # Offset model for grouped spectra plots:
-    # offset = span * stack_scale + stack_extra_gap
-    # Each group can be assigned its own spacing. RO is now given an explicit entry
-    # so it no longer depends on the first mapping value. The values below keep RO
-    # visually consistent with Au while making the configuration explicit.
-    RAW_STACK_SCALE = {"Au": 3, "RO": 1, "hBN": 5}
-    RAW_STACK_EXTRA_GAP = {"Au": 0, "RO": 0, "hBN": 10}
-    NORM_STACK_SCALE = {"Au": 2, "RO": 1, "hBN": 5}
-    NORM_STACK_EXTRA_GAP = {"Au": 0, "RO": 0, "hBN": 0}
-
+    # 6.5) Normalization settings for stacked spectra plots
     # "minmax" => [0, 1], "peak_1590" => divide by local max near 1590 cm^-1
     NORMALIZATION_METHOD = "peak_1590"
     NORMALIZATION_PEAK_CENTER_CM1 = 1590
     NORMALIZATION_PEAK_TOLERANCE_CM1 = 50
 
-    # Wavenumber used for cut-pixel map slice export color scale.
+    # 6.6) Cut-pixel map slice export color scale
     CUT_PIXEL_MAP_WAVENUMBER_CM1 = 1590
 
 
