@@ -18,7 +18,7 @@ class Paths:
     """Input data locations and path-level settings."""
 
     DATA_DIR = Path(
-        r"C:\Users\xuli\OneDrive - empa.ch\INT Lab 205 - 17AGNR_Xuanchen_Rafaela_Riya\02_Processed Raman data_ambient stability\S2_17AGNR_Low cov_RO"
+        r"C:\Users\xuli\OneDrive - empa.ch\INT Lab 205 - 17AGNR_Xuanchen_Rafaela_Riya\02_Processed Raman data_ambient stability\S5_17AGNR_High cov_Au"
     )
 
 
@@ -43,9 +43,9 @@ class Stage2PixelFilter:
     # You can also target Au/RO similarly, and mix values in one tuple.
 
     # 2.1) Border-pixel filtering
-    BORDER_ENABLED = True  # Enable border-pixel filtering before spectrum gating.
+    BORDER_ENABLED = False  # Enable border-pixel filtering before spectrum gating.
     BORDER_WIDTH = 1
-    BORDER_APPLY_TO_GROUPS = ("hBN_5",)
+    BORDER_APPLY_TO_GROUPS = ("hBN_1",)
 
     # 2.2) Spectrum gate by mean intensity in a target window
     SPECTRUM_GATE_ENABLED = False
@@ -62,7 +62,18 @@ class Stage2PixelFilter:
     # substring of the filename; values are lists of (x_index, y_index) pixels
     # to drop for maps matching that key.
     # Example: {"S6_17AGNR_High cov_RO_0003": [(0, 0), (3, 4)]}
-    SPECIFIC_PIXEL_EXCLUSIONS: dict["str", list[tuple[int, int]]] = {}
+    SPECIFIC_PIXEL_EXCLUSIONS: dict["str", list[tuple[int, int]]] = {
+        "S5_hBN_1_20260505": [
+            (6, 2), (3, 6), (4, 6), (5, 6)
+        ],
+        "S5_hBN_1_20260603": [
+            (2, 1), (3, 1), (4, 1), (4, 2), 
+            (6, 3), (3, 5), (3, 6)
+        ],
+        "S5_hBN_1_20260710": [
+            (0, 3), (0, 6), (1, 6), (2, 6), (1, 7)
+        ]
+    }
 
 
 # -----------------------------------------------------------------------------
@@ -81,10 +92,10 @@ class Stage4Despike:
     """Control despiking strength and aggressive-pixel shortlist size."""
 
     DESPIKE_NEIGH = 10  # Number of neighboring points used for local comparison.
-    DESPIKE_THRESHOLD = 3  # Spike detection sensitivity threshold.
+    DESPIKE_THRESHOLD = 2.5  # Spike detection sensitivity threshold.
     TOP_N_AGGRESSIVE_DESPIKE = 0  # Number of most-changed spectra shown in QC.
     # Wavenumber windows (cm^-1) left untouched by despiking, e.g. [(1580, 1600)].
-    DESPIKE_EXCLUDE_REGIONS_CM1: list[tuple[float, float]] | None = [(1300, 1380), (1550, 1630)]
+    DESPIKE_EXCLUDE_REGIONS_CM1: list[tuple[float, float]] | None = [(125, 200), (1300, 1380), (1550, 1630)]
 
 
 # -----------------------------------------------------------------------------
@@ -122,20 +133,20 @@ class Stage5Baseline:
     }
     NOISEAWARE_KWARGS = {
         "q_low": 5,  # Low-quantile level for initial background candidate.
-        "smooth_win": 20,  # Smoothing window for baseline trend extraction.
+        "smooth_win": 50,  # Smoothing window for baseline trend extraction.
         "mad_win": 31,  # Window for local MAD noise estimation.
         "z_keep": 5,  # Keep points within this robust z-score from background.
-        "min_region": 5,  # Minimum contiguous background region length.
-        "prom_k": 10,  # Peak prominence multiplier relative to local noise.
+        "min_region": 10,  # Minimum contiguous background region length.
+        "prom_k": 5,  # Peak prominence multiplier relative to local noise.
         "peak_dilate": 5,  # Expand detected peak masks by this many points.
-        "remove_k_sigma": 10,  # Threshold for removing connecting anchors based on robust residuals.
+        "remove_k_sigma": 5,  # Threshold for removing connecting anchors based on robust residuals.
         "fit_interp": "pchip",  # Interpolation for the anchor-based connecting baseline outside explicit peak regions: "pchip" or "spline".
         "bridge_interp": "linear",  # Interpolation used only inside explicit user-defined peak regions: "linear", "pchip", or "spline".
-        "forced_anchor_wavenumbers": None,  # cm^-1 targets; algorithm snaps each value to the nearest available point on the current spectrum grid.
-        "bias_strength": 0.1,  # Pull baseline slightly toward lower envelope.
+        "forced_anchor_wavenumbers": [60, 150, 220, 500, 700, 1000, 1900],  # cm^-1 targets; algorithm snaps each value to the nearest available point on the current spectrum grid.
+        "bias_strength": 0.25,  # Pull baseline slightly toward lower envelope.
     }
     # Regions always treated as peaks by noiseaware methods, in cm^-1.
-    PEAK_REGIONS = [(1300,1600),(2350,3330)]  # Force these intervals to stay peak-masked.
+    PEAK_REGIONS = [(1230,1420), (1525,1670)]  # Force these intervals to stay peak-masked.
 
 
 # -----------------------------------------------------------------------------
@@ -162,23 +173,15 @@ class Stage6MapAveragePlot:
     # }
     # Set either bound to None to keep matplotlib automatic behavior on that side.
     PLOT_WAVENUMBER_RANGES = (
-        {
-            "min": 75,
-            "max": 250,
-            "raw_stack_scale": {"RO": 2, "hBN": 2},
-            "raw_stack_extra_gap": {"RO": 0, "hBN": 0},
-            "norm_stack_scale": {"RO": 1.2, "hBN": 1},
-            "norm_stack_extra_gap": {"RO": 0, "hBN": 0},
-        },
-        (1200, 1700),
-    )
+        {1200, 1700},
+)
 
     # 6.3) Vertical offset per group for raw and normalized stacked spectra
     # Offset model for grouped spectra plots:
     # offset = span * stack_scale + stack_extra_gap
-    RAW_STACK_SCALE = {"Au": 3, "RO": 2, "hBN": 12}
+    RAW_STACK_SCALE = {"Au": 3, "RO": 1, "hBN": 3}
     RAW_STACK_EXTRA_GAP = {"Au": 0, "RO": 0, "hBN": 0}
-    NORM_STACK_SCALE = {"Au": 2, "RO": 1, "hBN": 1}
+    NORM_STACK_SCALE = {"Au": 2, "RO": 3, "hBN": 2}
     NORM_STACK_EXTRA_GAP = {"Au": 0, "RO": 0, "hBN": 0}
 
     # 6.4) Peak-ratio search windows
@@ -193,6 +196,11 @@ class Stage6MapAveragePlot:
 
     # 6.6) Cut-pixel map slice export color scale
     CUT_PIXEL_MAP_WAVENUMBER_CM1 = 1590
+
+    # 6.7) Pixel-count balancing across maps in the same group/subgroup
+    # True = trim every map in a scope down to the smallest valid-pixel count.
+    # False = each map averages over all of its own valid pixels.
+    BALANCE_PIXEL_COUNT_ENABLED = False
 
 
 # -----------------------------------------------------------------------------
@@ -274,6 +282,7 @@ class Stage5Plot:
     NORMALIZATION_PEAK_CENTER_CM1 = Stage6MapAveragePlot.NORMALIZATION_PEAK_CENTER_CM1
     NORMALIZATION_PEAK_TOLERANCE_CM1 = Stage6MapAveragePlot.NORMALIZATION_PEAK_TOLERANCE_CM1
     CUT_PIXEL_MAP_WAVENUMBER_CM1 = Stage6MapAveragePlot.CUT_PIXEL_MAP_WAVENUMBER_CM1
+    BALANCE_PIXEL_COUNT_ENABLED = Stage6MapAveragePlot.BALANCE_PIXEL_COUNT_ENABLED
 
 
 # -----------------------------------------------------------------------------
@@ -323,6 +332,7 @@ NORMALIZATION_METHOD = Stage6MapAveragePlot.NORMALIZATION_METHOD
 NORMALIZATION_PEAK_CENTER_CM1 = Stage6MapAveragePlot.NORMALIZATION_PEAK_CENTER_CM1
 NORMALIZATION_PEAK_TOLERANCE_CM1 = Stage6MapAveragePlot.NORMALIZATION_PEAK_TOLERANCE_CM1
 CUT_PIXEL_MAP_WAVENUMBER_CM1 = Stage6MapAveragePlot.CUT_PIXEL_MAP_WAVENUMBER_CM1
+BALANCE_PIXEL_COUNT_ENABLED = Stage6MapAveragePlot.BALANCE_PIXEL_COUNT_ENABLED
 
 EXPLORER_MAP_MODE = Explorer.EXPLORER_MAP_MODE
 EXPLORER_SNAPSHOT_DIR = Explorer.EXPLORER_SNAPSHOT_DIR
