@@ -19,6 +19,7 @@ from ..config import (
     NORMALIZATION_PEAK_TOLERANCE_CM1,
     PEAK_RATIO_WAVENUMBER_RANGES,
     PLOT_WAVENUMBER_RANGES,
+    SUBGROUP_SPLIT_GROUPS,
 )
 from ..core.analysis import build_average_map_spectra, build_peak_ratio_table
 from ..core.metadata import _extract_sample_code, infer_sample_name
@@ -493,25 +494,28 @@ def plot_normalized_overlap_by_group(
 def _split_groups_by_subgroup(
     avg_map_spectra: pd.DataFrame,
     groups: Iterable[str],
+    subgroup_split_groups: Iterable[str] = SUBGROUP_SPLIT_GROUPS,
 ) -> tuple[list[str], dict[str, list[str]]]:
     """Split requested groups into flat parent-level groups and multi-subgroup groups.
 
-    A group is only treated as "having subgroups" when it resolves to more than
-    one distinct subgroup label; such groups are dropped from the parent-level
-    panel list and instead get a dedicated per-subgroup breakdown.
+    Only groups listed in `subgroup_split_groups` are eligible for a per-subgroup
+    breakdown, and even then only when they resolve to more than one distinct
+    subgroup label; all other groups always stay at the parent (combined) level.
     """
     parent_groups: list[str] = []
     group_subgroups: dict[str, list[str]] = {}
+    splittable = set(subgroup_split_groups)
 
     for group_name in groups:
-        group_subset = avg_map_spectra[
-            (avg_map_spectra["group"] == group_name) & avg_map_spectra["subgroup"].notna()
-        ]
-        subgroups = sorted(str(value) for value in pd.unique(group_subset["subgroup"]))
-        if len(subgroups) > 1:
-            group_subgroups[group_name] = subgroups
-        else:
-            parent_groups.append(group_name)
+        if group_name in splittable:
+            group_subset = avg_map_spectra[
+                (avg_map_spectra["group"] == group_name) & avg_map_spectra["subgroup"].notna()
+            ]
+            subgroups = sorted(str(value) for value in pd.unique(group_subset["subgroup"]))
+            if len(subgroups) > 1:
+                group_subgroups[group_name] = subgroups
+                continue
+        parent_groups.append(group_name)
 
     return parent_groups, group_subgroups
 
@@ -520,6 +524,7 @@ def plot_average_and_normalized_map_spectra(
     parsed_collection: list[dict],
     spectrum_key: str = "corrected_spectra_cube",
     groups: Iterable[str] = ("Au", "RO", "hBN"),
+    subgroup_split_groups: Iterable[str] = SUBGROUP_SPLIT_GROUPS,
     balance_pixel_count_groups: Iterable[str] | None = None,
     normalization_method: str = NORMALIZATION_METHOD,
     normalization_peak_center_cm1: float = NORMALIZATION_PEAK_CENTER_CM1,
@@ -540,9 +545,11 @@ def plot_average_and_normalized_map_spectra(
     """Build per-map average spectra, then plot raw and normalized versions.
 
     Peak-ratio windows are configured independently from plot/export windows.
-    Any requested group that resolves to more than one subgroup is plotted only
-    at the subgroup level: its parent-group panel and parent-group peak ratio
-    are both skipped so the export does not contain a redundant combined view.
+    Only groups listed in `subgroup_split_groups` that resolve to more than one
+    subgroup are plotted at the subgroup level: their parent-group panel and
+    parent-group peak ratio are both skipped so the export does not contain a
+    redundant combined view. Groups not listed there are always plotted as one
+    combined group panel, regardless of how many subgroups they have.
     When a pdf parameter is provided, every figure of that kind is appended to
     that shared multi-page PDF instead of being saved as an individual PNG.
     Set `show=False` to skip inline display of each figure in the notebook.
@@ -591,7 +598,9 @@ def plot_average_and_normalized_map_spectra(
         )
         normalized_y_label = "Relative intensity (I / I_1590-window-max)"
 
-    parent_groups, group_subgroups = _split_groups_by_subgroup(avg_map_spectra, groups)
+    parent_groups, group_subgroups = _split_groups_by_subgroup(
+        avg_map_spectra, groups, subgroup_split_groups
+    )
 
     for range_config in resolved_ranges:
         range_min = range_config["wavenumber_min"]

@@ -18,7 +18,7 @@ class Paths:
     """Input data locations and path-level settings."""
 
     DATA_DIR = Path(
-        r"C:\Users\xuli\OneDrive - empa.ch\INT Lab 205 - 17AGNR_Xuanchen_Rafaela_Riya\02_Processed Raman data_ambient stability\S5_17AGNR_High cov_Au"
+        r"C:\Users\xuli\OneDrive - empa.ch\INT Lab 205 - 17AGNR_Xuanchen_Rafaela_Riya\02_Processed Raman data_ambient stability\S8_17AGNR_Low cov_Au"
     )
 
 
@@ -48,13 +48,13 @@ class Stage2PixelFilter:
     BORDER_APPLY_TO_GROUPS = ("hBN_1",)
 
     # 2.2) Spectrum gate by mean intensity in a target window
-    SPECTRUM_GATE_ENABLED = False
+    SPECTRUM_GATE_ENABLED = True
     SPECTRUM_GATE_WAVENUMBER_REGION_CM1 = (1360, 1370)
     SPECTRUM_GATE_MIN_MEAN_INTENSITY = 10000
     SPECTRUM_GATE_APPLY_TO_GROUPS = ("hBN",)
 
     # 2.3) Optional max-intensity cutoff
-    MAX_PIXEL_INTENSITY = None  # If None, this cutoff is skipped.
+    MAX_PIXEL_INTENSITY = 62000  # If None, this cutoff is skipped.
     MAX_INTENSITY_APPLY_TO_GROUPS = ("hBN",)
 
     # 2.4) Specific pixel exclusion by map
@@ -62,18 +62,7 @@ class Stage2PixelFilter:
     # substring of the filename; values are lists of (x_index, y_index) pixels
     # to drop for maps matching that key.
     # Example: {"S6_17AGNR_High cov_RO_0003": [(0, 0), (3, 4)]}
-    SPECIFIC_PIXEL_EXCLUSIONS: dict["str", list[tuple[int, int]]] = {
-        "S5_hBN_1_20260505": [
-            (6, 2), (3, 6), (4, 6), (5, 6)
-        ],
-        "S5_hBN_1_20260603": [
-            (2, 1), (3, 1), (4, 1), (4, 2), 
-            (6, 3), (3, 5), (3, 6)
-        ],
-        "S5_hBN_1_20260710": [
-            (0, 3), (0, 6), (1, 6), (2, 6), (1, 7)
-        ]
-    }
+    SPECIFIC_PIXEL_EXCLUSIONS: dict["str", list[tuple[int, int]]] = {}
 
 
 # -----------------------------------------------------------------------------
@@ -159,6 +148,10 @@ class Stage6MapAveragePlot:
     # "spectra_cube" = pre-baseline, "corrected_spectra_cube" = baseline-corrected
     SOURCE_SPECTRUM_KEY = "corrected_spectra_cube"
     MAP_GROUPS = ("Au", "RO", "hBN")
+
+    # Groups that get a separate plot/export per subgroup when they have >1 subgroup.
+    # Groups not listed here are always plotted/exported as one combined group panel.
+    SUBGROUP_SPLIT_GROUPS = ("hBN",)
 
     # 6.2) Plot window(s) for map-average spectra export
     # Use one tuple for one output set, for example: (1200, 1700)
@@ -272,6 +265,7 @@ class Stage5Plot:
 
     SOURCE_SPECTRUM_KEY = Stage6MapAveragePlot.SOURCE_SPECTRUM_KEY
     MAP_GROUPS = Stage6MapAveragePlot.MAP_GROUPS
+    SUBGROUP_SPLIT_GROUPS = Stage6MapAveragePlot.SUBGROUP_SPLIT_GROUPS
     PLOT_WAVENUMBER_RANGES = Stage6MapAveragePlot.PLOT_WAVENUMBER_RANGES
     PEAK_RATIO_WAVENUMBER_RANGES = Stage6MapAveragePlot.PEAK_RATIO_WAVENUMBER_RANGES
     RAW_STACK_SCALE = Stage6MapAveragePlot.RAW_STACK_SCALE
@@ -322,6 +316,7 @@ NOISEAWARE_PEAK_REGIONS = Stage5Baseline.PEAK_REGIONS
 
 SOURCE_SPECTRUM_KEY = Stage6MapAveragePlot.SOURCE_SPECTRUM_KEY
 MAP_GROUPS = Stage6MapAveragePlot.MAP_GROUPS
+SUBGROUP_SPLIT_GROUPS = Stage6MapAveragePlot.SUBGROUP_SPLIT_GROUPS
 PLOT_WAVENUMBER_RANGES = Stage6MapAveragePlot.PLOT_WAVENUMBER_RANGES
 PEAK_RATIO_WAVENUMBER_RANGES = Stage6MapAveragePlot.PEAK_RATIO_WAVENUMBER_RANGES
 RAW_STACK_SCALE = Stage6MapAveragePlot.RAW_STACK_SCALE
